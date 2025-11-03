@@ -1,0 +1,11 @@
+
+{
+  "name": "xafpay/backend",
+  "require": {
+    "vlucas/phpdotenv": "^5.6",
+    "guzzlehttp/guzzle": "^7.9"
+  },
+  "autoload": {
+    "files": ["config.php", "utils.php"]
+  }
+}
