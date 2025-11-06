@@ -71,7 +71,8 @@ if (!function_exists('db_cfg')) {
 if (!function_exists('db_connect')) {
     function db_connect(): PDO {
         $cfg = db_cfg();
-        $dsn = "pgsql:host={$cfg['host']};port={$cfg['port']};dbname={$cfg['dbname']}";
+        $dsn = "pgsql:host={$cfg['host']};port={$cfg['port']};dbname={$cfg['dbname']};sslmode=require";
+
         try {
             $pdo = new PDO($dsn, $cfg['user'], $cfg['password'], [
                 PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
