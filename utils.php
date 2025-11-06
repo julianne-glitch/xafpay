@@ -1,7 +1,7 @@
 <?php
 // utils.php — small helpers
 
-function json_out($data, int $code = 200): void {
+/**function json_out($data, int $code = 200): void {
   http_response_code($code);
   header('Content-Type: application/json');
   echo json_encode($data);
@@ -19,3 +19,4 @@ function hmac_sign(array $payload, string $secret): string {
   ksort($payload);
   return hash_hmac('sha256', json_encode($payload), $secret);
 }
+*/

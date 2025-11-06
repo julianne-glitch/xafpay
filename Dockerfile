@@ -1,15 +1,21 @@
-FROM php:8.3-apache
+FROM php:8.3-cli
 
+# Install PHP extensions
 RUN docker-php-ext-install mysqli pdo pdo_mysql
 
-WORKDIR /var/www/html
-COPY . /var/www/html
-
+# Install system dependencies
 RUN apt-get update && apt-get install -y unzip curl git \
     && curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
 
+# Set working directory
+WORKDIR /app
+COPY . /app
+
+# Install composer dependencies
 RUN composer install --no-interaction --no-progress || true
 
-EXPOSE 8080
+# Expose the port Render uses
+EXPOSE 8000
 
-CMD sed -i "s/80/\${PORT}/g" /etc/apache2/ports.conf && apache2-foreground
+# Start command — use PHP built-in server and your router
+CMD ["php", "-S", "0.0.0.0:8000", "server.php"]
