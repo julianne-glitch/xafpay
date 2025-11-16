@@ -1,4 +1,15 @@
 <?php
+// Allow requests from your React dev server
+header("Access-Control-Allow-Origin: *");
+header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
+header("Access-Control-Allow-Headers: Content-Type, Authorization");
+
+// Respond quickly to preflight checks
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+  http_response_code(200);
+  exit;
+}
+
 echo "<pre>";
 echo "Base URL: " . base_url() . "\n";
 echo "HMAC_SECRET: " . hmac_secret() . "\n";

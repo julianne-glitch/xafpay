@@ -3,40 +3,31 @@ require_once __DIR__ . '/config.php';
 
 try {
     $pdo = db_connect();
-    echo "✅ Database connection successful!\n\n";
 
-    // List all tables in the public schema
+    echo "✅ Connected to database successfully!\n\n";
+
+    $dbname = $pdo->query("SELECT current_database()")->fetchColumn();
+    echo "Current database: $dbname\n";
+
+    $schema = $pdo->query("SHOW search_path")->fetchColumn();
+    echo "Current schema path: $schema\n\n";
+
     $tables = $pdo->query("
-        SELECT tablename 
-        FROM pg_tables 
-        WHERE schemaname = 'public'
-    ")->fetchAll(PDO::FETCH_COLUMN);
+        SELECT table_schema, table_name
+        FROM information_schema.tables
+        WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
+        ORDER BY table_schema, table_name
+    ")->fetchAll(PDO::FETCH_ASSOC);
 
     if (!$tables) {
-        echo "No tables found in public schema.\n";
-        exit;
-    }
-
-    echo "📋 Tables in public schema:\n";
-    foreach ($tables as $table) {
-        echo " - $table\n";
-
-        // Get first 5 rows from each table
-        try {
-            $rows = $pdo->query("SELECT * FROM $table LIMIT 5")->fetchAll(PDO::FETCH_ASSOC);
-            if ($rows) {
-                echo "   Sample rows:\n";
-                foreach ($rows as $row) {
-                    echo "    " . json_encode($row) . "\n";
-                }
-            } else {
-                echo "   (No rows in this table)\n";
-            }
-        } catch (PDOException $e) {
-            echo "   ❌ Error fetching rows: " . $e->getMessage() . "\n";
+        echo "⚠️ No user-defined tables found.\n";
+    } else {
+        echo "✅ Found the following tables:\n";
+        foreach ($tables as $t) {
+            echo "- {$t['table_schema']}.{$t['table_name']}\n";
         }
     }
 
 } catch (Exception $e) {
-    die("❌ Connection failed: " . $e->getMessage());
+    echo "❌ Error: " . $e->getMessage();
 }

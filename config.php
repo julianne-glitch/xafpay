@@ -61,7 +61,7 @@ if (!function_exists('db_cfg')) {
             'host'     => envv('DB_HOST', 'localhost'),
             'port'     => envv('DB_PORT', '5432'),
             'dbname'   => envv('DB_NAME', 'xafpay'),
-            'user'     => envv('DB_USER', 'xafuser'),
+            'user'     => envv('DB_USER', 'xafpay_user'),
             'password' => envv('DB_PASS', ''),
         ];
     }
@@ -71,19 +71,23 @@ if (!function_exists('db_cfg')) {
 if (!function_exists('db_connect')) {
     function db_connect(): PDO {
         $cfg = db_cfg();
-        $dsn = "pgsql:host={$cfg['host']};port={$cfg['port']};dbname={$cfg['dbname']};sslmode=require";
-
+        $dsn = "pgsql:host={$cfg['host']};port={$cfg['port']};dbname={$cfg['dbname']}";
         try {
             $pdo = new PDO($dsn, $cfg['user'], $cfg['password'], [
                 PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
                 PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
             ]);
+
+            // ✅ Force use of public schema
+            $pdo->exec("SET search_path TO public");
+
             return $pdo;
         } catch (PDOException $e) {
             die("Database connection failed: " . $e->getMessage());
         }
     }
 }
+
 
 /** ✅ Helper functions */
 if (!function_exists('json_out')) {
