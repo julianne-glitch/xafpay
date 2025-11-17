@@ -1,39 +1,46 @@
 <?php
-// server.php — router for PHP built-in server (Render)
+// server.php — router for PHP built-in server on Render
 
-// Load Composer autoload
 require __DIR__ . '/vendor/autoload.php';
 
 $path = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
 
-// 1️⃣ Serve static files (CSS, JS, images, HTML, etc.)
-if ($path !== '/' && file_exists(__DIR__ . $path) && !is_dir(__DIR__ . $path)) {
-    return false; // Let PHP serve it directly
+// 1️⃣ Serve real files directly
+$full = __DIR__ . $path;
+if ($path !== '/' && file_exists($full) && !is_dir($full)) {
+    return false; // Let PHP serve the file
 }
 
-// 2️⃣ Serve public API files under /public/*
-if (str_starts_with($path, '/public/')) {
+// Helper for checking prefix (str_starts_with is not supported on older PHP)
+function starts_with($haystack, $needle) {
+    return substr($haystack, 0, strlen($needle)) === $needle;
+}
+
+// 2️⃣ Serve all /public/*.php endpoints correctly
+if (starts_with($path, '/public/')) {
     $target = __DIR__ . $path;
     if (file_exists($target)) {
         require $target;
         exit;
     }
     http_response_code(404);
-    echo json_encode(['error' => 'Not found', 'path' => $path]);
+    echo json_encode(['error' => 'Public endpoint not found', 'path' => $path]);
     exit;
 }
 
-// 3️⃣ Serve /api/* endpoints (your previous config)
-if (str_starts_with($path, '/api/')) {
+// 3️⃣ Serve /api/* endpoints
+if (starts_with($path, '/api/')) {
     $target = __DIR__ . $path . '.php';
     if (file_exists($target)) {
         require $target;
         exit;
     }
-    json_out(['ok' => false, 'error' => 'Not Found', 'path' => $path], 404);
+    http_response_code(404);
+    echo json_encode(['error' => 'API endpoint not found', 'path' => $path]);
+    exit;
 }
 
-// 4️⃣ Serve /checkout
+// 4️⃣ Route /checkout
 if ($path === '/checkout') {
     require __DIR__ . '/public/checkout.php';
     exit;
