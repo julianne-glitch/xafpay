@@ -1,43 +1,60 @@
 <?php
-// Allow requests from your React dev server
+
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
 header("Access-Control-Allow-Headers: Content-Type, Authorization");
 
-// Respond quickly to preflight checks
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
   http_response_code(200);
   exit;
 }
 
 require_once __DIR__ . '/../config.php';
-require_once __DIR__ . '/_auth.php';
 use GuzzleHttp\Client;
 
 $pdo = db_connect();
-$merchant = require_merchant($pdo);   // ✅ Auth check
+$input = json_decode(file_get_contents("php://input"), true);
 
-$cfg = mtn_cfg();
-$amount   = isset($_REQUEST['amount']) ? (int)$_REQUEST['amount'] : 0;
-$currency = $_REQUEST['currency'] ?? $cfg['currency'];
-$orderId  = $_REQUEST['order_id'] ?? ('ORD-' . time());
- 
+$orderId  = $input['order_id'] ?? '';
+$amount   = $input['amount'] ?? 0;
+$currency = $input['currency'] ?? 'XAF';
+
+if (!$orderId) {
+  json_out(['error' => 'order_id required'], 400);
+}
 
 if ($amount <= 0) {
-  json_out(['error' => 'amount must be > 0'], 400);
-}
-if (!$cfg['subKey'] || !$cfg['apiUser'] || !$cfg['apiKey']) {
-  json_out(['error' => 'MTN sandbox keys missing'], 500);
+  json_out(['error' => 'amount required'], 400);
 }
 
+// -----------------------------------------
+// 1️⃣ Fetch session from DB
+// -----------------------------------------
+$stmt = $pdo->prepare("SELECT * FROM sessions WHERE order_id = ?");
+$stmt->execute([$orderId]);
+$session = $stmt->fetch(PDO::FETCH_ASSOC);
+
+if (!$session) {
+  json_out(['error' => 'Session not found'], 404);
+}
+
+$phone   = $session['phone_number'];
+$carrier = $session['carrier_code'];
+$amount  = $session['amount'];   // override amount for safety
+
+// -----------------------------------------
+// 2️⃣ MTN PAYMENT ONLY FOR NOW
+// -----------------------------------------
+if ($carrier !== 'MTN') {
+  json_out(['error' => 'Only MTN supported for now'], 400);
+}
+
+$cfg = mtn_cfg();
 $client = new Client(['base_uri' => $cfg['base'], 'timeout' => 20]);
 
-// ✅ Connect to DB early
-$pdo = db_connect();
-var_dump("Connected DB OK");
-
-
-// 1️⃣ Get access token
+// -----------------------------------------
+// 3️⃣ Get MTN token
+// -----------------------------------------
 try {
   $resp = $client->post('/collection/token/', [
     'headers' => [
@@ -45,13 +62,18 @@ try {
       'Authorization'             => 'Basic ' . base64_encode($cfg['apiUser'] . ':' . $cfg['apiKey']),
     ],
   ]);
-  $token = json_decode((string)$resp->getBody(), true)['access_token'] ?? null;
-  if (!$token) throw new Exception('No access_token');
+
+  $token = json_decode($resp->getBody()->getContents(), true)['access_token'] ?? null;
+
+  if (!$token) throw new Exception("No access_token received");
+
 } catch (Throwable $e) {
-  json_out(['error' => 'MTN token error', 'detail' => $e->getMessage()], 500);
+  json_out(['error' => 'MTN token error', 'details' => $e->getMessage()], 500);
 }
 
-// 2️⃣ requestToPay
+// -----------------------------------------
+// 4️⃣ MTN RequestToPay
+// -----------------------------------------
 $referenceId = uuidv4();
 $body = [
   'amount'      => (string)$amount,
@@ -59,10 +81,10 @@ $body = [
   'externalId'  => $orderId,
   'payer'       => [
     'partyIdType' => 'MSISDN',
-    'partyId'     => $cfg['payerMsisdn'], // sandbox payer
+    'partyId'     => $phone
   ],
-  'payerMessage' => $cfg['payerMsg'],
-  'payeeNote'    => $cfg['payeeNote'],
+  'payerMessage' => "XafPay Checkout",
+  'payeeNote'    => "XafPay Order $orderId"
 ];
 
 try {
@@ -76,32 +98,43 @@ try {
     ],
     'json' => $body,
   ]);
+
 } catch (Throwable $e) {
   json_out(['error' => 'MTN requestToPay error', 'detail' => $e->getMessage()], 500);
 }
 
-// ✅ 3️⃣ Log payment into DB
+// -----------------------------------------
+// 5️⃣ Insert payment into DB
+// -----------------------------------------
 try {
   $stmt = $pdo->prepare("
-    INSERT INTO payments (id, session_id, carrier, amount, status, reference_id, created_at)
-    VALUES (:id, NULL, 'MTN', :amount, 'PENDING', :ref, NOW())
+    INSERT INTO payments (session_id, order_id, carrier, phone_number, amount, reference_id, status, created_at)
+    VALUES (:session_id, :order_id, 'MTN', :phone, :amount, :ref, 'PENDING', NOW())
   ");
+
   $stmt->execute([
-    'id' => uuidv4(),
-    'amount' => $amount,
-    'ref' => $referenceId
+    ':session_id' => $session['id'],
+    ':order_id'   => $orderId,
+    ':phone'      => $phone,
+    ':amount'     => $amount,
+    ':ref'        => $referenceId
   ]);
+
 } catch (Throwable $e) {
   error_log("DB insert error: " . $e->getMessage());
 }
 
-// 4️⃣ Respond to client
+// -----------------------------------------
+// 6️⃣ Return to frontend (React)
+// -----------------------------------------
+$statusUrl = base_url() . "/api/status.php?ref={$referenceId}";
+
 json_out([
   'ok'            => true,
-  'provider'      => 'mtn',
+  'provider'      => 'MTN',
   'reference_id'  => $referenceId,
   'order_id'      => $orderId,
   'amount'        => $amount,
   'currency'      => $currency,
-  'status_url'    => (base_url() ?: 'http://localhost/xafpay-backend') . "/api/status.php?ref={$referenceId}",
+  'status_url'    => $statusUrl
 ]);
