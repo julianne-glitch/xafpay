@@ -10,9 +10,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
   exit;
 }
 
-echo "<pre>";
-echo "Base URL: " . base_url() . "\n";
-echo "HMAC_SECRET: " . hmac_secret() . "\n";
+//echo "<pre>";
+//echo "Base URL: " . base_url() . "\n";
+//echo "HMAC_SECRET: " . hmac_secret() . "\n";
 $amount   = isset($_REQUEST['amount']) ? (int)$_REQUEST['amount'] : 0;
 $currency = $_REQUEST['currency'] ?? mtn_cfg()['currency'];
 $orderId  = $_REQUEST['order_id'] ?? ('ORD-' . time());
