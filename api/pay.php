@@ -1,4 +1,6 @@
 <?php
+require_once __DIR__ . '/../logger.php';
+log_event("status.php started", $_GET);
 
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: GET, POST, OPTIONS");

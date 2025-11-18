@@ -1,7 +1,7 @@
 <?php
 require_once __DIR__ . '/../config.php';
-require_once __DIR__ . '/logger.php';
-log_this("FILE_NAME.php called", ["request" => $_REQUEST]);
+require_once __DIR__ . '/../logger.php';
+log_event("status.php started", $_GET);
 
 
 // Enable errors

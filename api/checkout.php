@@ -1,4 +1,7 @@
 <?php
+require_once __DIR__ . '/../logger.php';
+log_event("status.php started", $_GET);
+
 // Minimal hosted page (works local and Render)
 $session = $_GET['session_id'] ?? '';
 $orderId = $_GET['order_id'] ?? '';
