@@ -1,39 +1,49 @@
 <?php
-// Allow requests from your React dev server
+require_once __DIR__ . '/logger.php';
+log_this("FILE_NAME.php called", ["request" => $_REQUEST]);
+
+// ----------------------------------------------
+// checkout.php — Safe redirect to React checkout
+// ----------------------------------------------
+
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
 header("Access-Control-Allow-Headers: Content-Type, Authorization");
 
-// Respond quickly to preflight checks
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-  http_response_code(200);
-  exit;
+    http_response_code(200);
+    exit;
 }
 
-//echo "<pre>";
-//echo "Base URL: " . base_url() . "\n";
-//echo "HMAC_SECRET: " . hmac_secret() . "\n";
-$amount   = isset($_REQUEST['amount']) ? (int)$_REQUEST['amount'] : 0;
-$currency = $_REQUEST['currency'] ?? mtn_cfg()['currency'];
-$orderId  = $_REQUEST['order_id'] ?? ('ORD-' . time());
+$orderId  = $_GET['order_id'] ?? null;
+$amount   = $_GET['amount'] ?? null;
+$currency = $_GET['currency'] ?? 'XAF';
 
-if ($amount <= 0) {
-  json_out(['error' => 'amount must be > 0'], 400);
+// If required fields missing → show simple error
+if (!$orderId || !$amount) {
+    echo "<h2>XafPay Checkout</h2>";
+    echo "<p>Missing order information.</p>";
+    exit;
 }
 
-$sessionId   = 'sess_' . bin2hex(random_bytes(6));
-$payload     = ['session_id' => $sessionId, 'order_id' => $orderId, 'amount' => $amount, 'currency' => $currency];
-$sig         = hmac_sign($payload, hmac_secret());
+// ----------------------------------------------
+// Your React checkout URL (production)
+// ----------------------------------------------
+$reactCheckout = "https://checkout.xafpay.com/?order_id={$orderId}&amount={$amount}&currency={$currency}";
 
-$checkoutUrl = base_url()
-  ? base_url() . "/checkout?session_id={$sessionId}&order_id={$orderId}&amount={$amount}&currency={$currency}&sig={$sig}"
-  : "http://localhost:8000/checkout?session_id={$sessionId}&order_id={$orderId}&amount={$amount}&currency={$currency}&sig={$sig}";
+// (Local Dev Example: http://localhost:5173)
+// ----------------------------------------------
 
-json_out([
-  'ok'           => true,
-  'session_id'   => $sessionId,
-  'order_id'     => $orderId,
-  'amount'       => $amount,
-  'currency'     => $currency,
-  'checkout_url' => $checkoutUrl,
-]);
+?>
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>XafPay Secure Checkout</title>
+    <meta http-equiv="refresh" content="0;url=<?=$reactCheckout?>">
+</head>
+<body>
+    <p>Redirecting to secure XafPay Checkout...</p>
+    <p>If you are not redirected automatically, <a href="<?=$reactCheckout?>">click here</a>.</p>
+</body>
+</html>

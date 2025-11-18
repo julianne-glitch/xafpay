@@ -1,4 +1,7 @@
 <?php
+require_once __DIR__ . '/logger.php';
+log_this("FILE_NAME.php called", ["request" => $_REQUEST]);
+
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
 header("Access-Control-Allow-Headers: Content-Type, Authorization");
@@ -14,12 +17,14 @@ use GuzzleHttp\Client;
 $cfg = mtn_cfg();
 $ref = $_GET['ref'] ?? '';
 
-if (!$ref) json_out(['error' => 'ref required'], 400);
+if (!$ref) {
+    json_out(['error' => 'ref required'], 400);
+}
 
 $pdo = db_connect();
 
 // ---------------------------------------------------
-// 1️⃣ Fetch payment row to get order_id & session_id
+// 1️⃣ Fetch payment row
 // ---------------------------------------------------
 $stmt = $pdo->prepare("SELECT * FROM payments WHERE reference_id = ?");
 $stmt->execute([$ref]);
@@ -33,7 +38,7 @@ $orderId   = $payment['order_id'];
 $sessionId = $payment['session_id'];
 
 // ---------------------------------------------------
-// 2️⃣ Get MTN access token
+// 2️⃣ Get MTN Token
 // ---------------------------------------------------
 try {
     $client = new Client(['base_uri' => $cfg['base'], 'timeout' => 20]);
@@ -50,7 +55,7 @@ try {
 }
 
 // ---------------------------------------------------
-// 3️⃣ Check MTN payment status
+// 3️⃣ Query MTN for Status
 // ---------------------------------------------------
 try {
     $resp = $client->get("/collection/v1_0/requesttopay/{$ref}", [
@@ -69,22 +74,35 @@ try {
 }
 
 // ---------------------------------------------------
-// 4️⃣ Update payments table + sessions table
+// 4️⃣ Normalize status for React & WC
+// ---------------------------------------------------
+$frontendStatus = match ($mtnStatus) {
+    'SUCCESSFUL' => 'SUCCESS',
+    'FAILED'     => 'FAILED',
+    default      => 'PENDING',
+};
+
+// ---------------------------------------------------
+// 5️⃣ Update DB (payments + sessions)
 // ---------------------------------------------------
 try {
+    // Update payments table
     $pdo->prepare("
-        UPDATE payments SET status = :status, updated_at = NOW()
+        UPDATE payments
+        SET status = :status, updated_at = NOW()
         WHERE reference_id = :ref
     ")->execute([
         'status' => $mtnStatus,
         'ref'    => $ref
     ]);
 
+    // Update sessions table
     $pdo->prepare("
-        UPDATE sessions SET status = :status, updated_at = NOW()
+        UPDATE sessions
+        SET status = :status, updated_at = NOW()
         WHERE id = :session
     ")->execute([
-        'status'  => $mtnStatus,
+        'status' => $frontendStatus,  // internal clean status
         'session' => $sessionId
     ]);
 
@@ -93,19 +111,21 @@ try {
 }
 
 // ---------------------------------------------------
-// 5️⃣ Trigger WooCommerce callback IF SUCCESS
+// 6️⃣ WooCommerce callback on SUCCESS
 // ---------------------------------------------------
-if ($mtnStatus === 'SUCCESS') {
-    $wcCallback = base_url() . "/wc-api/xafpay_callback?order_id={$orderId}&status=success&signature="
-        . hash_hmac('sha256', $orderId . 'success', hmac_secret());
+if ($frontendStatus === 'SUCCESS') {
+    $signature = hash_hmac('sha256', $orderId . 'success', hmac_secret());
+    $wcCallback = base_url()
+        . "/wc-api/xafpay_callback?order_id={$orderId}&status=success&signature={$signature}";
 
     file_get_contents($wcCallback);
 }
 
 // ---------------------------------------------------
-// 6️⃣ Return format MATCHING React expectations
+// 7️⃣ Response to React
 // ---------------------------------------------------
 json_out([
     'reference_id' => $ref,
-    'status'       => $mtnStatus  // <-- React checks THIS directly
+    'status'       => $frontendStatus,   // <-- FIXED
+    'provider_raw' => $data
 ]);

@@ -1,75 +1,91 @@
 <?php
 
 header("Access-Control-Allow-Origin: *");
-header("Content-Type: application/json");
+header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
+header("Access-Control-Allow-Headers: Content-Type, Authorization");
 
-require_once __DIR__ . '/../config.php';
-
-$payload = json_decode(file_get_contents("php://input"), true);
-
-if (!$payload) {
-    http_response_code(400);
-    echo json_encode(['error' => 'Invalid JSON']);
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+    http_response_code(200);
     exit;
 }
 
-// Extract MTN fields
-$status  = strtoupper($payload['status'] ?? '');
-$orderId = $payload['externalId'] ?? '';
-$ftId    = $payload['financialTransactionId'] ?? null;
+require_once __DIR__ . '/../config.php';
 
-if (!$orderId || !$status) {
-    http_response_code(400);
-    echo json_encode(['error' => 'Missing required fields']);
-    exit;
+$orderId   = $_GET['order_id'] ?? '';
+$status    = $_GET['status']   ?? '';
+$signature = $_GET['signature'] ?? '';
+
+if (!$orderId || !$status || !$signature) {
+    json_out(['error' => 'Missing parameters'], 400);
+}
+
+$expected = hash_hmac('sha256', $orderId . $status, hmac_secret());
+
+if (!hash_equals($expected, $signature)) {
+    json_out(['error' => 'Invalid signature'], 403);
 }
 
 $pdo = db_connect();
 
-// ------------------------------------------------------
-// 1️⃣ Update payments table
-// ------------------------------------------------------
+// -------------------------------------------------------
+// 1️⃣ Fetch session + payment
+// -------------------------------------------------------
 $stmt = $pdo->prepare("
-    UPDATE payments
-    SET status = :status, mtn_ft_id = :ftid, updated_at = NOW()
-    WHERE order_id = :order_id
+    SELECT s.id AS session_id, p.reference_id
+    FROM sessions s
+    LEFT JOIN payments p ON p.order_id = s.order_id
+    WHERE s.order_id = :oid
+    LIMIT 1
 ");
-$stmt->execute([
-    'status'   => $status,
-    'ftid'     => $ftId,
-    'order_id' => $orderId
-]);
+$stmt->execute(['oid' => $orderId]);
+$row = $stmt->fetch(PDO::FETCH_ASSOC);
 
-// ------------------------------------------------------
-// 2️⃣ Update sessions table
-// ------------------------------------------------------
-$stmt = $pdo->prepare("
-    UPDATE sessions
-    SET status = :status, updated_at = NOW()
-    WHERE order_id = :order_id
-");
-$stmt->execute([
-    'status'   => $status,
-    'order_id' => $orderId
-]);
+$sessionId   = $row['session_id'] ?? null;
+$referenceId = $row['reference_id'] ?? null;
 
-// ------------------------------------------------------
-// 3️⃣ Notify WooCommerce
-// ------------------------------------------------------
-$secret = hmac_secret();
-$signature = hash_hmac('sha256', $orderId . strtolower($status), $secret);
+$internalStatus = strtoupper($status) === 'success' ? 'SUCCESS' : 'FAILED';
 
-$wcCallback =
-    base_url() .
-    "/wc-api/xafpay_callback?order_id={$orderId}&status=" .
-    strtolower($status) . "&signature={$signature}";
+// -------------------------------------------------------
+// 2️⃣ Update DB
+// -------------------------------------------------------
+try {
+    if ($sessionId) {
+        $pdo->prepare("
+            UPDATE sessions
+            SET status = :st, updated_at = NOW()
+            WHERE id = :sid
+        ")->execute([
+            'st' => $internalStatus,
+            'sid' => $sessionId
+        ]);
+    }
 
-file_get_contents($wcCallback);
+    if ($referenceId) {
+        $pdo->prepare("
+            UPDATE payments
+            SET status = :st, updated_at = NOW()
+            WHERE reference_id = :ref
+        ")->execute([
+            'st' => $internalStatus,
+            'ref' => $referenceId
+        ]);
+    }
 
-// ------------------------------------------------------
-// 4️⃣ Return OK to MTN
-// ------------------------------------------------------
-echo json_encode([
-    'ok'       => true,
-    'received' => $payload
-]);
+} catch (Throwable $e) {
+    error_log("DB update error: " . $e->getMessage());
+}
+
+// -------------------------------------------------------
+// 3️⃣ Build final WC return URL
+// -------------------------------------------------------
+$wcBase = wc_base_url(); // defined in config.php
+
+$returnUrl = $wcBase
+    . "/?order_id={$orderId}"
+    . "&payment_status=" . strtolower($internalStatus);
+
+// -------------------------------------------------------
+// 4️⃣ Redirect back to WC checkout result page
+// -------------------------------------------------------
+header("Location: {$returnUrl}");
+exit;
