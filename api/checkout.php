@@ -1,5 +1,5 @@
 <?php
-require_once __DIR__ . '/../logger.php';
+require_once __DIR__ . '/logger.php';
 log_event("status.php started", $_GET);
 
 // Minimal hosted page (works local and Render)

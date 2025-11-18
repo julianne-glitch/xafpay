@@ -1,8 +1,7 @@
 <?php
 require_once __DIR__ . '/../config.php';
-require_once __DIR__ . '/../logger.php';
+require_once __DIR__ . '/logger.php';
 log_event("status.php started", $_GET);
-
 
 // Enable errors
 ini_set('display_errors', 1);

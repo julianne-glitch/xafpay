@@ -1,6 +1,7 @@
 <?php
-require_once __DIR__ . '/../logger.php';
+require_once __DIR__ . '/logger.php';
 log_event("status.php started", $_GET);
+
 
 // -----------------------------------------
 // CORS
