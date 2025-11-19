@@ -12,24 +12,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 }
 
 require_once __DIR__ . '/../config.php';
-require_once __DIR__ . '/_auth.php';  // contains require_merchant()
+require_once __DIR__ . '/_auth.php';  // contains optional_hmac_auth()
 
 $pdo  = db_connect();
 
 // ------------------------------------
-// 1️⃣ Authenticate merchant properly
+// 1️⃣ Authenticate merchant (optional)
 // ------------------------------------
 $auth = optional_hmac_auth($pdo);
 $merchant = $auth['merchant'];  // may be null
 
-// If merchant is null (no headers), fallback to a default merchant
+// Default merchant fallback
 $merchantId = $merchant['id'] ?? 1;
-
 
 // ------------------------------------
 // 2️⃣ Read input safely
 // ------------------------------------
-$raw   = file_get_contents("php://input");
+$raw = file_get_contents("php://input");
 $input = json_decode($raw, true);
 
 if (!$input) $input = $_POST;
@@ -46,13 +45,15 @@ if (!$orderId || !$amount || !$phone) {
 $phone = preg_replace('/\D+/', '', $phone);
 
 // ------------------------------------
-// 3️⃣ Detect carrier
+// 3️⃣ Detect carrier CORRECTLY
 // ------------------------------------
-$carrier = match (true) {
-    preg_match('/^(65|67|68|650|651|652|653|654|680|681)/', $phone) => 'MTN',
-    preg_match('/^(69|690|691|692|693|694|695|696|697|698)/', $phone) => 'ORANGE',
-    default => 'UNKNOWN',
-};
+if (preg_match('/^(67|650|651|652|653|654|680|681|682|683|684)/', $phone)) {
+    $carrier = 'MTN';
+} elseif (preg_match('/^(69|690|691|692|693|694|695|696|697|698)/', $phone)) {
+    $carrier = 'ORANGE';
+} else {
+    $carrier = 'UNKNOWN';
+}
 
 if ($carrier === 'UNKNOWN') {
     json_out(['error' => 'Unsupported phone number'], 400);
