@@ -1,37 +1,41 @@
 <?php
-// ------------------------------------------------------
-// OPTIONAL HMAC AUTH — If headers exist, verify them.
-// If missing, skip authentication safely.
-// NEVER return empty output (prevents network errors).
-// ------------------------------------------------------
+// ---------------------------------------------------------
+// OPTIONAL HMAC AUTH — Works for public + merchant requests
+// NEVER throws fatal errors, always returns usable result
+// ---------------------------------------------------------
 
 require_once __DIR__ . '/../config.php';
 
-function get_header_value($name) {
+/**
+ * Read header safely
+ */
+function header_value($name) {
     $key = 'HTTP_' . strtoupper(str_replace('-', '_', $name));
     return $_SERVER[$key] ?? null;
 }
 
-function optional_hmac_auth($pdo)
-{
-    $apiKey     = get_header_value('x-api-key');
-    $timestamp  = get_header_value('x-timestamp');
-    $signature  = get_header_value('x-signature');
+/**
+ * Optional HMAC authentication
+ * If headers exist → validate
+ * If missing → allow public request
+ */
+function optional_hmac_auth(PDO $pdo): array {
 
-    // --------------------------------------------------
-    // Case 1 — No auth headers → allow request
-    // --------------------------------------------------
+    // Read headers
+    $apiKey    = header_value('x-api-key');
+    $timestamp = header_value('x-timestamp');
+    $signature = header_value('x-signature');
+
+    // No headers → public mode
     if (!$apiKey || !$timestamp || !$signature) {
         return [
-            'auth'  => 'none',
-            'valid' => true,
+            'auth'     => 'none',
+            'valid'    => true,
             'merchant' => null
         ];
     }
 
-    // --------------------------------------------------
-    // Case 2 — Merchant lookup
-    // --------------------------------------------------
+    // Lookup merchant
     $stmt = $pdo->prepare("SELECT * FROM merchants WHERE api_key = :k LIMIT 1");
     $stmt->execute(['k' => $apiKey]);
     $merchant = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -40,10 +44,14 @@ function optional_hmac_auth($pdo)
         json_out(['error' => 'Invalid API key'], 401);
     }
 
+    // Read raw body exactly once
     $raw = $GLOBALS['XAF_RAW_BODY'] ?? file_get_contents("php://input");
-    $compute = hash_hmac('sha256', $raw . $timestamp, $merchant['secret_key']);
+    $GLOBALS['XAF_RAW_BODY'] = $raw;
 
-    if (!hash_equals($compute, $signature)) {
+    // Compute signature
+    $expected = hash_hmac('sha256', $raw . $timestamp, $merchant['secret_key']);
+
+    if (!hash_equals($expected, $signature)) {
         json_out(['error' => 'Invalid signature'], 401);
     }
 
