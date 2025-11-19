@@ -4,6 +4,9 @@
 // ------------------------------------------------------------
 
 require_once __DIR__ . '/logger.php';
+require_once __DIR__ . '/../config.php';
+require_once __DIR__ . '/_auth.php';
+
 log_event("payments.php reached", [
     'GET'     => $_GET,
     'POST'    => $_POST,
@@ -26,30 +29,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 }
 
 // ------------------------------------------------------------
-// Load config + optional auth
+// Optional Merchant Auth (safe — never breaks)
 // ------------------------------------------------------------
-require_once __DIR__ . '/../config.php';
-require_once __DIR__ . '/_auth.php';
-
 $pdo = db_connect();
-
-// ------------------------------------------------------------
-// 1️⃣ Optional Merchant Authentication
-// ------------------------------------------------------------
-// If no headers → merchant = null → fallback to merchant_id=1
-// If headers provided → authenticates properly
-// NO MORE ERRORS
-// ------------------------------------------------------------
-
 $auth = optional_hmac_auth($pdo);
 $merchant = $auth['merchant'] ?? null;
 
-$merchantId = $merchant['id'] ?? 1;   // fallback merchant
+// If no merchant auth → default to merchant_id = 1
+$merchantId = $merchant['id'] ?? 1;
 
 log_event("payments.php merchant_detected", $merchantId);
 
 // ------------------------------------------------------------
-// 2️⃣ Fetch last 50 payments
+// Query last 50 payments for this merchant
 // ------------------------------------------------------------
 try {
 
@@ -80,9 +72,9 @@ try {
     log_event("payments.php result_count", count($rows));
 
     json_out([
-        'ok' => true,
+        'ok'          => true,
         'merchant_id' => $merchantId,
-        'data' => $rows
+        'data'        => $rows
     ]);
 
 } catch (Throwable $e) {
@@ -90,7 +82,8 @@ try {
     log_event("payments.php exception", $e->getMessage());
 
     json_out([
-        'ok' => false,
+        'ok'    => false,
         'error' => $e->getMessage()
     ], 500);
 }
+
