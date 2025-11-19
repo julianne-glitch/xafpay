@@ -23,7 +23,8 @@ $auth = optional_hmac_auth($pdo);
 $merchant = $auth['merchant'];  // may be null
 
 // Default merchant fallback
-$merchantId = $merchant['id'] ?? 1;
+$merchantId = $merchant['id'] ?? '185b2203-ec89-4d7d-9568-f48dd9311120';
+
 
 // ------------------------------------
 // 2️⃣ Read input safely
