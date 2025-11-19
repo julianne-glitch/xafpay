@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . '/logger.php';
 require_once __DIR__ . '/../config.php';
+use GuzzleHttp\Client;
 
 log_event("PAY_START", file_get_contents("php://input"));
 
@@ -15,24 +16,33 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     exit;
 }
 
-use GuzzleHttp\Client;
-
-$pdo   = db_connect();
-$input = json_decode(file_get_contents("php://input"), true);
-
 // --------------------------------------------------
-// 1️⃣ Validate order_id
+// SAFE INPUT READER (FIX FOR JSON.parse ERROR)
+// Accepts JSON, FormData, or Query params
 // --------------------------------------------------
-$orderId = $input['order_id'] ?? '';
+$raw = file_get_contents("php://input");
+$input = json_decode($raw, true);
+
+if (!$input || !is_array($input)) {
+    $input = $_POST; // fallback
+}
+
+$orderId = $input['order_id'] ?? ($_GET['order_id'] ?? '');
 if (!$orderId) {
     json_out(['error' => 'order_id required'], 400);
 }
 
 // --------------------------------------------------
-// 2️⃣ Fetch Session (NO MERCHANT AUTH HERE)
+// DB CONNECT
+// --------------------------------------------------
+$pdo = db_connect();
+
+// --------------------------------------------------
+// FETCH SESSION (no merchant auth needed)
 // --------------------------------------------------
 $stmt = $pdo->prepare("
-    SELECT * FROM sessions 
+    SELECT *
+    FROM sessions
     WHERE order_id = :order
     LIMIT 1
 ");
@@ -49,11 +59,11 @@ $phone     = $session['phone_number'];
 $carrier   = $session['carrier_code'];
 
 if ($carrier !== 'MTN') {
-    json_out(['error' => 'Only MTN supported'], 400);
+    json_out(['error' => 'Only MTN supported currently'], 400);
 }
 
 // --------------------------------------------------
-// 3️⃣ Idempotency Check
+// IDEMPOTENCY CHECK
 // --------------------------------------------------
 $stmt = $pdo->prepare("SELECT * FROM payments WHERE session_id = ?");
 $stmt->execute([$sessionId]);
@@ -75,7 +85,7 @@ if ($existing) {
 }
 
 // --------------------------------------------------
-// 4️⃣ MTN Token
+// MTN TOKEN
 // --------------------------------------------------
 $cfg = mtn_cfg();
 
@@ -89,16 +99,21 @@ try {
         ],
     ]);
 
-    $token = json_decode($resp->getBody(), true)['access_token'] ?? null;
+    $json = json_decode($resp->getBody(), true);
+    $token = $json['access_token'] ?? null;
 
-    if (!$token) throw new Exception("Token missing");
-
+    if (!$token) {
+        throw new Exception("Token missing from MTN");
+    }
 } catch (Throwable $e) {
-    json_out(['error' => 'MTN token error', 'detail' => $e->getMessage()], 500);
+    json_out([
+        'error' => 'MTN token error',
+        'detail' => $e->getMessage()
+    ], 500);
 }
 
 // --------------------------------------------------
-// 5️⃣ MTN Request To Pay
+// MTN REQUEST TO PAY
 // --------------------------------------------------
 $referenceId = uuidv4();
 
@@ -125,13 +140,15 @@ try {
         ],
         'json' => $body,
     ]);
-
 } catch (Throwable $e) {
-    json_out(['error' => 'MTN requestToPay error', 'detail' => $e->getMessage()], 500);
+    json_out([
+        'error' => 'MTN requestToPay error',
+        'detail' => $e->getMessage()
+    ], 500);
 }
 
 // --------------------------------------------------
-// 6️⃣ Insert Payment Row
+// INSERT PAYMENT ROW
 // --------------------------------------------------
 $stmt = $pdo->prepare("
     INSERT INTO payments (
@@ -170,7 +187,7 @@ $stmt->execute([
 ]);
 
 // --------------------------------------------------
-// 7️⃣ Final Response
+// FINAL RESPONSE TO FRONTEND
 // --------------------------------------------------
 json_out([
     'ok'           => true,
@@ -179,5 +196,5 @@ json_out([
     'order_id'     => $orderId,
     'amount'       => $amount,
     'currency'     => 'XAF',
-    'status_url'   => base_url()."/api/status.php?ref={$referenceId}"
+    'status_url'   => base_url() . "/api/status.php?ref={$referenceId}"
 ]);
