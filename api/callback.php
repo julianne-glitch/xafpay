@@ -1,10 +1,15 @@
 <?php
 require_once __DIR__ . '/logger.php';
-log_event("status.php started", $_GET);
 
+// Log markers
+log_event("wc_callback.php reached", $_GET);
+log_event("wc_callback.php query", $_SERVER['QUERY_STRING'] ?? '');
 
+// ------------------------------------------------------------
+// CORS
+// ------------------------------------------------------------
 header("Access-Control-Allow-Origin: *");
-header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
+header("Access-Control-Allow-Methods: GET, OPTIONS");
 header("Access-Control-Allow-Headers: Content-Type, Authorization");
 
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
@@ -22,7 +27,10 @@ if (!$orderId || !$status || !$signature) {
     json_out(['error' => 'Missing parameters'], 400);
 }
 
-$expected = hash_hmac('sha256', $orderId . $status, hmac_secret());
+// ------------------------------------------------------------
+// 1️⃣ Verify signature
+// ------------------------------------------------------------
+$expected = hash_hmac('sha256', $orderId . 'success', hmac_secret());
 
 if (!hash_equals($expected, $signature)) {
     json_out(['error' => 'Invalid signature'], 403);
@@ -30,27 +38,40 @@ if (!hash_equals($expected, $signature)) {
 
 $pdo = db_connect();
 
-// -------------------------------------------------------
-// 1️⃣ Fetch session + payment
-// -------------------------------------------------------
+// ------------------------------------------------------------
+// 2️⃣ Fetch session + payment (correct join)
+// ------------------------------------------------------------
 $stmt = $pdo->prepare("
-    SELECT s.id AS session_id, p.reference_id
+    SELECT 
+        s.id AS session_id,
+        p.reference_id,
+        p.callback_sent
     FROM sessions s
-    LEFT JOIN payments p ON p.order_id = s.order_id
+    LEFT JOIN payments p ON p.session_id = s.id
     WHERE s.order_id = :oid
     LIMIT 1
 ");
+
 $stmt->execute(['oid' => $orderId]);
 $row = $stmt->fetch(PDO::FETCH_ASSOC);
 
-$sessionId   = $row['session_id'] ?? null;
-$referenceId = $row['reference_id'] ?? null;
+$sessionId     = $row['session_id'] ?? null;
+$referenceId   = $row['reference_id'] ?? null;
+$callbackSent  = $row['callback_sent'] ?? false;
 
-$internalStatus = strtoupper($status) === 'success' ? 'SUCCESS' : 'FAILED';
+// ------------------------------------------------------------
+// 3️⃣ Avoid duplicate callbacks
+// ------------------------------------------------------------
+if ($callbackSent) {
+    log_event("wc_callback.php duplicate", $orderId);
+}
 
-// -------------------------------------------------------
-// 2️⃣ Update DB
-// -------------------------------------------------------
+// Normalize status
+$internalStatus = strtolower($status) === 'success' ? 'SUCCESS' : 'FAILED';
+
+// ------------------------------------------------------------
+// 4️⃣ Update database
+// ------------------------------------------------------------
 try {
     if ($sessionId) {
         $pdo->prepare("
@@ -58,7 +79,7 @@ try {
             SET status = :st, updated_at = NOW()
             WHERE id = :sid
         ")->execute([
-            'st' => $internalStatus,
+            'st'  => $internalStatus,
             'sid' => $sessionId
         ]);
     }
@@ -66,29 +87,32 @@ try {
     if ($referenceId) {
         $pdo->prepare("
             UPDATE payments
-            SET status = :st, updated_at = NOW()
+            SET status = :st,
+                callback_sent = TRUE,
+                updated_at = NOW()
             WHERE reference_id = :ref
         ")->execute([
-            'st' => $internalStatus,
+            'st'  => $internalStatus,
             'ref' => $referenceId
         ]);
     }
 
+    log_event("wc_callback.php db_update", [
+        'order_id' => $orderId,
+        'reference_id' => $referenceId,
+        'status' => $internalStatus
+    ]);
+
 } catch (Throwable $e) {
-    error_log("DB update error: " . $e->getMessage());
+    log_event("wc_callback.php DB error", $e->getMessage());
 }
 
-// -------------------------------------------------------
-// 3️⃣ Build final WC return URL
-// -------------------------------------------------------
-$wcBase = wc_base_url(); // defined in config.php
+// ------------------------------------------------------------
+// 5️⃣ Redirect to WC "order-received" page
+// ------------------------------------------------------------
+$wcBase = wc_base_url();   // MUST return https
 
-$returnUrl = $wcBase
-    . "/?order_id={$orderId}"
-    . "&payment_status=" . strtolower($internalStatus);
+$returnUrl = $wcBase . "/?order_id={$orderId}&payment_status=" . strtolower($internalStatus);
 
-// -------------------------------------------------------
-// 4️⃣ Redirect back to WC checkout result page
-// -------------------------------------------------------
 header("Location: {$returnUrl}");
 exit;

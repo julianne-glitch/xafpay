@@ -1,14 +1,10 @@
 <?php
 require_once __DIR__ . '/logger.php';
-log_event("status.php started", $_GET);
+log_event("SESSION_START", file_get_contents("php://input"));
 
-
-// -----------------------------------------
-// CORS
-// -----------------------------------------
 header("Access-Control-Allow-Origin: *");
-header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
-header("Access-Control-Allow-Headers: Content-Type, Authorization");
+header("Access-Control-Allow-Methods: POST, OPTIONS");
+header("Access-Control-Allow-Headers: Content-Type, Authorization, X-API-KEY, X-SIGNATURE, X-TIMESTAMP");
 
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     http_response_code(200);
@@ -16,92 +12,121 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 }
 
 require_once __DIR__ . '/../config.php';
+require_once __DIR__ . '/_auth.php'; // merchant auth + HMAC
 
-$pdo   = db_connect();
-$input = json_decode(file_get_contents("php://input"), true);
+use GuzzleHttp\Client;
 
-// -----------------------------------------
-// Validate inputs
-// -----------------------------------------
-$amount       = $input['amount'] ?? 0;
-$carrier_code = $input['carrier_code'] ?? "";
-$phone        = $input['phone_number'] ?? "";
+$pdo  = db_connect();
 
-if ($amount <= 0) {
-    json_out(['error' => 'Invalid amount'], 400);
+// ------------------------------------
+// 1️⃣ Authenticate merchant
+// ------------------------------------
+$merchant = require __DIR__ . "/_auth.php";
+
+$merchantId = $merchant['id'];
+
+// ------------------------------------
+// 2️⃣ Read input
+// ------------------------------------
+$input = json_decode($GLOBALS['XAF_RAW_BODY'] ?? file_get_contents("php://input"), true);
+
+$orderId   = $input['order_id'] ?? '';
+$amount    = $input['amount'] ?? '';
+$currency  = $input['currency'] ?? 'XAF';
+$phone     = $input['phone'] ?? '';
+
+if (!$orderId || !$amount || !$phone) {
+    json_out(['error' => 'Missing required fields (order_id, amount, phone)'], 400);
 }
 
-if (!in_array($carrier_code, ['MTN', 'Orange'])) {
-    json_out(['error' => 'Invalid carrier'], 400);
+// clean phone
+$phone = preg_replace('/\D+/', '', $phone);
+
+// ------------------------------------
+// 3️⃣ Detect Carrier (MTN or Orange)
+// ------------------------------------
+$carrier = null;
+
+if (preg_match('/^(67|68|650|651|652|653|654|680|681|682|683|684)/', $phone)) {
+    $carrier = 'MTN';
+} elseif (preg_match('/^(69|690|691|692|693|694|695|696|697|698)/', $phone)) {
+    $carrier = 'ORANGE';
+} else {
+    $carrier = "UNKNOWN";
 }
 
-if (!preg_match('/^\d{9}$/', $phone)) {
-    json_out(['error' => 'Invalid phone number'], 400);
+if ($carrier === "UNKNOWN") {
+    json_out(['error' => 'Unsupported phone number'], 400);
 }
 
-// -----------------------------------------
-// Generate session + order IDs
-// -----------------------------------------
-$session_id = uuidv4();
-$order_id   = "ORD-" . time() . "-" . rand(1000, 9999);
+// ------------------------------------
+// 4️⃣ Check duplicate session (idempotency)
+// Prevents WooCommerce from creating multiple sessions
+// ------------------------------------
+$stmt = $pdo->prepare("SELECT * FROM sessions WHERE merchant_id = :m AND order_id = :o LIMIT 1");
+$stmt->execute(['m' => $merchantId, 'o' => $orderId]);
+$existing = $stmt->fetch(PDO::FETCH_ASSOC);
 
-// -----------------------------------------
-// Insert into DB — New Standard Schema
-// -----------------------------------------
-try {
-    $stmt = $pdo->prepare("
-        INSERT INTO sessions (
-            id,
-            order_id,
-            amount,
-            currency,
-            status,
-            phone_number,
-            carrier_code,
-            merchant_id,
-            customer_id,
-            created_at,
-            updated_at
-        )
-        VALUES (
-            :id,
-            :order_id,
-            :amount,
-            'XAF',
-            'PENDING',
-            :phone,
-            :carrier,
-            NULL,
-            NULL,
-            NOW(),
-            NOW()
-        )
-    ");
-
-    $stmt->execute([
-        ':id'       => $session_id,
-        ':order_id' => $order_id,
-        ':amount'   => $amount,
-        ':phone'    => $phone,
-        ':carrier'  => $carrier_code,
-    ]);
-
-} catch (Throwable $e) {
+if ($existing) {
+    log_event("SESSION_IDEMPOTENT", $existing);
     json_out([
-        'error'   => 'Database error',
-        'details' => $e->getMessage()
-    ], 500);
+        'ok'         => true,
+        'session_id' => $existing['id'],
+        'amount'     => $existing['amount'],
+        'currency'   => $existing['currency'],
+        'phone'      => $existing['phone_number'],
+        'carrier'    => $existing['carrier_code'],
+    ]);
 }
 
-// -----------------------------------------
-// Return session data to frontend
-// -----------------------------------------
+// ------------------------------------
+// 5️⃣ Insert NEW session
+// ------------------------------------
+$stmt = $pdo->prepare("
+    INSERT INTO sessions (
+        merchant_id,
+        order_id,
+        amount,
+        currency,
+        phone_number,
+        carrier_code,
+        status,
+        created_at,
+        updated_at
+    ) VALUES (
+        :merchant,
+        :order_id,
+        :amount,
+        :currency,
+        :phone,
+        :carrier,
+        'INIT',
+        NOW(),
+        NOW()
+    )
+    RETURNING id
+");
+
+$stmt->execute([
+    ':merchant'  => $merchantId,
+    ':order_id'  => $orderId,
+    ':amount'    => $amount,
+    ':currency'  => $currency,
+    ':phone'     => $phone,
+    ':carrier'   => $carrier,
+]);
+
+$sessionId = $stmt->fetchColumn();
+
+// ------------------------------------
+// 6️⃣ Response
+// ------------------------------------
 json_out([
     'ok'         => true,
-    'session_id' => $session_id,
-    'order_id'   => $order_id,
+    'session_id' => $sessionId,
+    'order_id'   => $orderId,
     'amount'     => $amount,
-    'currency'   => 'XAF',
-    'carrier'    => $carrier_code,
-    'phone'      => $phone
+    'currency'   => $currency,
+    'phone'      => $phone,
+    'carrier'    => $carrier,
 ]);

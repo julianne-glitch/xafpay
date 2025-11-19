@@ -3,30 +3,34 @@
 
 use Dotenv\Dotenv;
 
-// ✅ Prevent double-loading
+// Prevent double-loading
 if (!defined('CONFIG_LOADED')) {
     define('CONFIG_LOADED', true);
 
-    // Load Composer autoload if present
+    // Composer autoload (for Guzzle + Dotenv)
     if (file_exists(__DIR__ . '/vendor/autoload.php')) {
         require_once __DIR__ . '/vendor/autoload.php';
     }
 
-    // Load .env for local development
+    // Load .env for local dev
     if (class_exists(Dotenv::class) && file_exists(__DIR__ . '/.env')) {
         $dotenv = Dotenv::createImmutable(__DIR__);
         $dotenv->load();
     }
 }
 
-/** ✅ Get env variable with default */
+/**
+ * ENV helper
+ */
 if (!function_exists('envv')) {
     function envv(string $key, ?string $default = null): ?string {
         return $_ENV[$key] ?? $_SERVER[$key] ?? getenv($key) ?: $default;
     }
 }
 
-/** ✅ Common config accessors */
+/**
+ * Base environment helpers
+ */
 if (!function_exists('app_env')) {
     function app_env(): string { return envv('APP_ENV', 'sandbox'); }
 }
@@ -36,8 +40,13 @@ if (!function_exists('base_url')) {
 if (!function_exists('hmac_secret')) {
     function hmac_secret(): string { return envv('HMAC_SECRET', 'change_me'); }
 }
+if (!function_exists('wc_base_url')) {
+    function wc_base_url(): string { return rtrim(envv('WC_BASE_URL', ''), '/'); }
+}
 
-/** ✅ MTN MoMo configuration */
+/**
+ * MTN MOMO configuration
+ */
 if (!function_exists('mtn_cfg')) {
     function mtn_cfg(): array {
         return [
@@ -54,7 +63,9 @@ if (!function_exists('mtn_cfg')) {
     }
 }
 
-/** ✅ Database configuration */
+/**
+ * Database configuration
+ */
 if (!function_exists('db_cfg')) {
     function db_cfg(): array {
         return [
@@ -67,7 +78,9 @@ if (!function_exists('db_cfg')) {
     }
 }
 
-/** ✅ Connect to PostgreSQL using PDO */
+/**
+ * Connect to PostgreSQL using PDO
+ */
 if (!function_exists('db_connect')) {
     function db_connect(): PDO {
         $cfg = db_cfg();
@@ -78,18 +91,20 @@ if (!function_exists('db_connect')) {
                 PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
             ]);
 
-            // ✅ Force use of public schema
+            // Force use of public schema
             $pdo->exec("SET search_path TO public");
 
             return $pdo;
+
         } catch (PDOException $e) {
             die("Database connection failed: " . $e->getMessage());
         }
     }
 }
 
-
-/** ✅ Helper functions */
+/**
+ * JSON response helper
+ */
 if (!function_exists('json_out')) {
     function json_out($data, int $code = 200): void {
         http_response_code($code);
@@ -99,6 +114,9 @@ if (!function_exists('json_out')) {
     }
 }
 
+/**
+ * UUID generator
+ */
 if (!function_exists('uuidv4')) {
     function uuidv4(): string {
         $data = random_bytes(16);
@@ -108,9 +126,63 @@ if (!function_exists('uuidv4')) {
     }
 }
 
+/**
+ * HMAC signing helper
+ */
 if (!function_exists('hmac_sign')) {
     function hmac_sign(array $payload, string $secret): string {
         ksort($payload);
         return hash_hmac('sha256', json_encode($payload), $secret);
     }
 }
+
+/**
+ * AUTH HELPERS
+ * These are needed to avoid missing function errors
+ */
+
+if (!function_exists('require_merchant')) {
+    function require_merchant(PDO $pdo) {
+        $headers = getallheaders();
+        $apiKey = $headers['X-API-KEY'] ?? null;
+
+        if (!$apiKey) {
+            json_out(['error' => 'Missing X-API-KEY'], 401);
+        }
+
+        $stmt = $pdo->prepare("SELECT * FROM merchants WHERE api_key = :k LIMIT 1");
+        $stmt->execute(['k' => $apiKey]);
+        $merchant = $stmt->fetch();
+
+        if (!$merchant || !$merchant['is_active']) {
+            json_out(['error' => 'Invalid or inactive merchant'], 403);
+        }
+
+        return $merchant;
+    }
+}
+
+if (!function_exists('require_admin')) {
+    function require_admin(PDO $pdo) {
+        $headers = getallheaders();
+        $token = $headers['Authorization'] ?? '';
+
+        if (!str_starts_with($token, "Bearer ")) {
+            json_out(['error' => 'Missing bearer token'], 401);
+        }
+
+        $token = trim(str_replace("Bearer ", "", $token));
+        $data = json_decode(base64_decode($token), true);
+
+        if (!$data || ($data['exp'] ?? 0) < time()) {
+            json_out(['error' => 'Expired or invalid admin token'], 401);
+        }
+
+        if (($data['role'] ?? '') !== 'admin') {
+            json_out(['error' => 'Admin only'], 403);
+        }
+
+        return $data['user'];
+    }
+}
+

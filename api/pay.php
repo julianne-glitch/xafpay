@@ -1,7 +1,6 @@
 <?php
 require_once __DIR__ . '/logger.php';
-log_event("status.php started", $_GET);
-
+log_event("PAY_START", file_get_contents("php://input"));
 
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
@@ -13,59 +12,86 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 }
 
 require_once __DIR__ . '/../config.php';
+require_once __DIR__ . '/_auth.php';     // FULL merchant authentication
 use GuzzleHttp\Client;
 
 $pdo   = db_connect();
 $input = json_decode(file_get_contents("php://input"), true);
 
-// ---------------------------------------------------------
-// 🔐 Validate input
-// ---------------------------------------------------------
-$orderId  = $input['order_id'] ?? '';
-$currency = $input['currency'] ?? 'XAF';
+// -----------------------------------------
+// 1️⃣ Merchant Authentication (from _auth.php)
+// -----------------------------------------
+$merchant = require __DIR__ . '/_auth.php';  // returns merchant row
+$merchantId = $merchant['id'];
+$secretKey  = $merchant['secret_key'];
+
+// -----------------------------------------
+// 2️⃣ Validate required field(s)
+// -----------------------------------------
+$orderId = $input['order_id'] ?? '';
 
 if (!$orderId) {
     json_out(['error' => 'order_id required'], 400);
 }
 
-// ---------------------------------------------------------
-// 1️⃣ Fetch Session (payer info, amount, carrier)
-// ---------------------------------------------------------
-$stmt = $pdo->prepare("SELECT * FROM sessions WHERE order_id = :order LIMIT 1");
-$stmt->execute(['order' => $orderId]);
+// -----------------------------------------
+// 3️⃣ Fetch Session (amount + payer + carrier)
+// -----------------------------------------
+$stmt = $pdo->prepare("
+    SELECT * FROM sessions 
+    WHERE order_id = :order AND merchant_id = :m 
+    LIMIT 1
+");
+$stmt->execute([
+    'order' => $orderId,
+    'm'     => $merchantId
+]);
 $session = $stmt->fetch(PDO::FETCH_ASSOC);
 
 if (!$session) {
     json_out(['error' => 'Session not found'], 404);
 }
 
-$sessionId   = $session['id'];
-$amount      = $session['amount'];         // enforce stored amount
-$phone       = $session['phone_number'];
-$carrier     = $session['carrier_code'];
+// Enforce DB values
+$sessionId = $session['id'];
+$amount    = $session['amount'];
+$phone     = $session['phone_number'];
+$carrier   = $session['carrier_code'];
 
-// ---------------------------------------------------------
-// 2️⃣ Currently only MTN is supported
-// ---------------------------------------------------------
 if ($carrier !== 'MTN') {
-    json_out(['error' => 'Only MTN supported for now'], 400);
+    json_out(['error' => 'Only MTN supported'], 400);
 }
 
+// -----------------------------------------
+// 4️⃣ Idempotency Check
+// -----------------------------------------
+$stmt = $pdo->prepare("SELECT * FROM payments WHERE session_id = ?");
+$stmt->execute([$sessionId]);
+$existing = $stmt->fetch(PDO::FETCH_ASSOC);
+
+if ($existing) {
+    log_event("PAY_IDEMPOTENT_RETURN", $existing);
+
+    json_out([
+        'ok'           => true,
+        'idempotent'   => true,
+        'provider'     => 'MTN',
+        'reference_id' => $existing['reference_id'],
+        'order_id'     => $orderId,
+        'amount'       => $amount,
+        'currency'     => $existing['currency'],
+        'status_url'   => base_url()."/api/status.php?ref=".$existing['reference_id']
+    ]);
+}
+
+// -----------------------------------------
+// 5️⃣ MTN Token
+// -----------------------------------------
 $cfg = mtn_cfg();
 
-if (!$cfg['subKey'] || !$cfg['apiUser'] || !$cfg['apiKey']) {
-    json_out(['error' => 'MTN configuration missing'], 500);
-}
-
-$client = new Client([
-    'base_uri' => $cfg['base'],
-    'timeout'  => 20
-]);
-
-// ---------------------------------------------------------
-// 3️⃣ Get MTN access token
-// ---------------------------------------------------------
 try {
+    $client = new Client(['base_uri' => $cfg['base'], 'timeout' => 20]);
+
     $resp = $client->post('/collection/token/', [
         'headers' => [
             'Ocp-Apim-Subscription-Key' => $cfg['subKey'],
@@ -74,22 +100,23 @@ try {
     ]);
 
     $token = json_decode($resp->getBody(), true)['access_token'] ?? null;
+
     if (!$token) throw new Exception("Token missing");
 
 } catch (Throwable $e) {
     json_out(['error' => 'MTN token error', 'detail' => $e->getMessage()], 500);
 }
 
-// ---------------------------------------------------------
-// 4️⃣ MTN RequestToPay
-// ---------------------------------------------------------
+// -----------------------------------------
+// 6️⃣ MTN Request To Pay
+// -----------------------------------------
 $referenceId = uuidv4();
 
 $body = [
-    'amount'      => (string)$amount,
-    'currency'    => $currency,
-    'externalId'  => $orderId,
-    'payer'       => [
+    'amount'       => (string)$amount,
+    'currency'     => 'XAF',
+    'externalId'   => $orderId,
+    'payer'        => [
         'partyIdType' => 'MSISDN',
         'partyId'     => $phone
     ],
@@ -113,53 +140,52 @@ try {
     json_out(['error' => 'MTN requestToPay error', 'detail' => $e->getMessage()], 500);
 }
 
-// ---------------------------------------------------------
-// 5️⃣ Insert Payment Row
-// ---------------------------------------------------------
-try {
-    $stmt = $pdo->prepare("
-        INSERT INTO payments (
-            session_id,
-            order_id,
-            phone_number,
-            carrier,
-            amount,
-            currency,
-            reference_id,
-            status,
-            created_at,
-            updated_at
-        ) VALUES (
-            :session,
-            :order_id,
-            :phone,
-            'MTN',
-            :amount,
-            :currency,
-            :ref,
-            'PENDING',
-            NOW(),
-            NOW()
-        )
-    ");
+// -----------------------------------------
+// 7️⃣ Insert Payment Row
+// -----------------------------------------
+$stmt = $pdo->prepare("
+    INSERT INTO payments (
+        session_id,
+        merchant_id,
+        order_id,
+        phone_number,
+        carrier,
+        amount,
+        currency,
+        reference_id,
+        status,
+        callback_sent,
+        created_at,
+        updated_at
+    ) VALUES (
+        :session,
+        :merchant,
+        :order_id,
+        :phone,
+        'MTN',
+        :amount,
+        'XAF',
+        :ref,
+        'PENDING',
+        FALSE,
+        NOW(),
+        NOW()
+    )
+");
 
-    $stmt->execute([
-        ':session'  => $sessionId,
-        ':order_id' => $orderId,
-        ':phone'    => $phone,
-        ':amount'   => $amount,
-        ':currency' => $currency,
-        ':ref'      => $referenceId
-    ]);
+$stmt->execute([
+    ':session'  => $sessionId,
+    ':merchant' => $merchantId,
+    ':order_id' => $orderId,
+    ':phone'    => $phone,
+    ':amount'   => $amount,
+    ':ref'      => $referenceId
+]);
 
-} catch (Throwable $e) {
-    json_out(['error' => 'DB insert error', 'detail' => $e->getMessage()], 500);
-}
-
-// ---------------------------------------------------------
-// 6️⃣ Return to React
-// ---------------------------------------------------------
-$statusUrl = base_url() . "/api/status.php?ref={$referenceId}";
+// -----------------------------------------
+// 8️⃣ Final Response to React Checkout
+// -----------------------------------------
+$statusUrl = base_url()."/api/status.php?ref={$referenceId}";
 
 json_out([
     'ok'           => true,
@@ -167,6 +193,6 @@ json_out([
     'reference_id' => $referenceId,
     'order_id'     => $orderId,
     'amount'       => $amount,
-    'currency'     => $currency,
+    'currency'     => 'XAF',
     'status_url'   => $statusUrl
 ]);

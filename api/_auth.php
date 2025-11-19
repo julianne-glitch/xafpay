@@ -1,21 +1,23 @@
 <?php
 /**
  * _auth.php — Merchant Authentication Middleware
- * Ensures only authorized merchants can access XafPay API
+ * Used for merchant-facing API calls (pay.php, session.php)
  */
 
 require_once __DIR__ . '/../config.php';
 
 /**
- * Verifies merchant authentication and returns merchant record
- * Usage: $merchant = require_once __DIR__ . '/_auth.php';
+ * Returns merchant record on success or stops execution with json_out()
+ * Usage inside endpoint: $merchant = require __DIR__ . '/_auth.php';
  */
 
 try {
     $pdo = db_connect();
 
-    // Extract headers
-    $headers = getallheaders();
+    // -------------------------------
+    // 1️⃣ Extract Auth Headers
+    // -------------------------------
+    $headers   = getallheaders();
     $apiKey    = $headers['X-API-KEY']    ?? null;
     $signature = $headers['X-SIGNATURE']  ?? null;
     $timestamp = $headers['X-TIMESTAMP']  ?? null;
@@ -24,30 +26,57 @@ try {
         json_out(['error' => 'Missing authentication headers'], 401);
     }
 
-    // Basic replay protection (timestamp not older than 5 minutes)
+    // -------------------------------
+    // 2️⃣ Check Timestamp (Replay Attack Prevention)
+    // -------------------------------
     $now = time();
     if (abs($now - (int)$timestamp) > 300) {
         json_out(['error' => 'Request timestamp expired'], 401);
     }
 
-    // Find merchant by API key
+    // -------------------------------
+    // 3️⃣ Find merchant by API key
+    // -------------------------------
     $stmt = $pdo->prepare("SELECT * FROM merchants WHERE api_key = :api_key LIMIT 1");
     $stmt->execute(['api_key' => $apiKey]);
-    $merchant = $stmt->fetch();
+    $merchant = $stmt->fetch(PDO::FETCH_ASSOC);
 
     if (!$merchant || !$merchant['is_active']) {
         json_out(['error' => 'Invalid or inactive merchant'], 403);
     }
 
-    // Recalculate signature using secret_key
-    $rawBody = file_get_contents('php://input');
-    $calcSig = hash_hmac('sha256', $rawBody . $timestamp, $merchant['secret_key']);
+    // -------------------------------
+    // 4️⃣ Read RAW BODY ONLY ONCE
+    // -------------------------------
+    $rawBody = $GLOBALS['XAF_RAW_BODY'] ?? null;
 
-    if (!hash_equals($calcSig, $signature)) {
+    if ($rawBody === null) {
+        $rawBody = file_get_contents('php://input');
+        $GLOBALS['XAF_RAW_BODY'] = $rawBody;
+    }
+
+    // -------------------------------
+    // 5️⃣ Compute Expected Signature
+    // Standard: HMAC_SHA256(timestamp + apiKey + body)
+    // -------------------------------
+    $expected = hash_hmac(
+        'sha256',
+        $timestamp . $apiKey . $rawBody,
+        $merchant['secret_key']
+    );
+
+    if (!hash_equals($expected, $signature)) {
+        log_event("AUTH_FAIL_SIGNATURE", [
+            'expected' => $expected,
+            'received' => $signature,
+            'body'     => $rawBody
+        ]);
         json_out(['error' => 'Invalid signature'], 403);
     }
 
-    // ✅ Authentication passed
+    // -------------------------------
+    // 6️⃣ Authentication Passed
+    // -------------------------------
     return $merchant;
 
 } catch (Throwable $e) {

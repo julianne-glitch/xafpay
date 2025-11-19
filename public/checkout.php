@@ -1,13 +1,10 @@
 <?php
-require_once __DIR__ . '/logger.php';
-log_event("status.php started", $_GET);
-
-
+require_once __DIR__ . '/../logger.php';
+log_event("checkout.php accessed", $_GET);
 
 // ----------------------------------------------
-// checkout.php — Safe redirect to React checkout
+// CORS — required for React / WooCommerce
 // ----------------------------------------------
-
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
 header("Access-Control-Allow-Headers: Content-Type, Authorization");
@@ -17,11 +14,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     exit;
 }
 
+// ----------------------------------------------
+// Read input parameters
+// ----------------------------------------------
 $orderId  = $_GET['order_id'] ?? null;
 $amount   = $_GET['amount'] ?? null;
 $currency = $_GET['currency'] ?? 'XAF';
 
-// If required fields missing → show simple error
+// Missing data → show simple error
 if (!$orderId || !$amount) {
     echo "<h2>XafPay Checkout</h2>";
     echo "<p>Missing order information.</p>";
@@ -29,12 +29,9 @@ if (!$orderId || !$amount) {
 }
 
 // ----------------------------------------------
-// Your React checkout URL (production)
+// React Checkout URL (Prod)
 // ----------------------------------------------
 $reactCheckout = "https://checkout.xafpay.com/?order_id={$orderId}&amount={$amount}&currency={$currency}";
-
-// (Local Dev Example: http://localhost:5173)
-// ----------------------------------------------
 
 ?>
 <!DOCTYPE html>
@@ -42,10 +39,10 @@ $reactCheckout = "https://checkout.xafpay.com/?order_id={$orderId}&amount={$amou
 <head>
     <meta charset="UTF-8">
     <title>XafPay Secure Checkout</title>
-    <meta http-equiv="refresh" content="0;url=<?=$reactCheckout?>">
+    <meta http-equiv="refresh" content="0; url=<?= htmlspecialchars($reactCheckout) ?>">
 </head>
 <body>
-    <p>Redirecting to secure XafPay Checkout...</p>
-    <p>If you are not redirected automatically, <a href="<?=$reactCheckout?>">click here</a>.</p>
+    <p>Redirecting to secure XafPay Checkout…</p>
+    <p>If not redirected, <a href="<?= htmlspecialchars($reactCheckout) ?>">click here</a>.</p>
 </body>
 </html>

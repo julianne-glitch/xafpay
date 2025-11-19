@@ -1,10 +1,24 @@
 <?php
+// ------------------------------------------------------------
+// payments.php — List payments for merchant dashboard
+// ------------------------------------------------------------
+
 require_once __DIR__ . '/logger.php';
-log_event("status.php started", $_GET);
 
+// Log entry
+log_event("payments.php reached", [
+    'GET'     => $_GET,
+    'POST'    => $_POST,
+    'headers' => getallheaders()
+]);
 
+// Log raw body (even if empty)
+$raw = file_get_contents("php://input");
+log_event("payments.php raw_body", $raw);
 
-// Allow requests (React dashboard / merchant panel)
+// ------------------------------------------------------------
+// CORS for dashboard
+// ------------------------------------------------------------
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: GET, OPTIONS");
 header("Access-Control-Allow-Headers: Content-Type, Authorization");
@@ -14,46 +28,61 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     exit;
 }
 
+// ------------------------------------------------------------
+// Load config + merchant auth
+// ------------------------------------------------------------
 require_once __DIR__ . '/../config.php';
-require_once __DIR__ . '/_auth.php';   // merchant auth
+
+// Authenticate merchant (THIS FIXES YOUR BUG)
+try {
+    $merchant = require __DIR__ . '/_auth.php';
+} catch (Throwable $e) {
+    log_event("payments.php auth_error", $e->getMessage());
+    json_out(['ok' => false, 'error' => 'Unauthorized'], 401);
+}
 
 $pdo = db_connect();
-$merchant = require_merchant($pdo);
 
+// ------------------------------------------------------------
+// Fetch last 50 payments
+// ------------------------------------------------------------
 try {
 
-    // ====================================================
-    // GET /api/payments.php
-    // List latest payments (limit 50)
-    // ====================================================
-    if ($_SERVER['REQUEST_METHOD'] === 'GET') {
+    $stmt = $pdo->prepare("
+        SELECT 
+            p.reference_id,
+            p.order_id,
+            p.session_id,
+            p.amount,
+            p.currency,
+            p.status,
+            p.created_at,
+            s.phone_number,
+            s.carrier_code
+        FROM payments p
+        LEFT JOIN sessions s ON s.id = p.session_id
+        WHERE p.merchant_id = :mid
+        ORDER BY p.created_at DESC
+        LIMIT 50
+    ");
 
-        $stmt = $pdo->prepare("
-            SELECT 
-                p.reference_id,
-                p.order_id,
-                p.session_id,
-                p.amount,
-                p.currency,
-                p.status,
-                p.created_at,
-                s.phone_number,
-                s.carrier_code
-            FROM payments p
-            LEFT JOIN sessions s ON s.id = p.session_id
-            ORDER BY p.created_at DESC
-            LIMIT 50
-        ");
-        $stmt->execute();
-        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    $stmt->execute([
+        'mid' => $merchant['id']
+    ]);
 
-        json_out([
-            'ok' => true,
-            'data' => $rows
-        ]);
-    }
+    $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    log_event("payments.php result_count", count($rows));
+
+    json_out([
+        'ok' => true,
+        'data' => $rows
+    ]);
 
 } catch (Throwable $e) {
+
+    log_event("payments.php exception", $e->getMessage());
+
     json_out([
         'ok' => false,
         'error' => $e->getMessage()
