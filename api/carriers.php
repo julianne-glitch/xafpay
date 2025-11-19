@@ -1,5 +1,5 @@
 <?php
-require_once __DIR__ . '/../logger.php';
+require_once __DIR__ . '/logger.php';
 log_event("carriers.php accessed", $_GET);
 
 header("Access-Control-Allow-Origin: *");
