@@ -12,58 +12,56 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 }
 
 require_once __DIR__ . '/../config.php';
-require_once __DIR__ . '/_auth.php'; // merchant auth + HMAC
-
-use GuzzleHttp\Client;
+require_once __DIR__ . '/_auth.php';  // contains require_merchant()
 
 $pdo  = db_connect();
 
 // ------------------------------------
-// 1️⃣ Authenticate merchant
+// 1️⃣ Authenticate merchant properly
 // ------------------------------------
-$merchant = require __DIR__ . "/_auth.php";
-
+$merchant = require_merchant($pdo);   // FIXED
 $merchantId = $merchant['id'];
 
 // ------------------------------------
-// 2️⃣ Read input
+// 2️⃣ Read input safely
 // ------------------------------------
-$input = json_decode($GLOBALS['XAF_RAW_BODY'] ?? file_get_contents("php://input"), true);
+$raw   = file_get_contents("php://input");
+$input = json_decode($raw, true);
 
-$orderId   = $input['order_id'] ?? '';
-$amount    = $input['amount'] ?? '';
-$currency  = $input['currency'] ?? 'XAF';
-$phone     = $input['phone'] ?? '';
+if (!$input) $input = $_POST;
+
+$orderId  = $input['order_id'] ?? '';
+$amount   = $input['amount'] ?? '';
+$currency = $input['currency'] ?? 'XAF';
+$phone    = $input['phone'] ?? '';
 
 if (!$orderId || !$amount || !$phone) {
     json_out(['error' => 'Missing required fields (order_id, amount, phone)'], 400);
 }
 
-// clean phone
 $phone = preg_replace('/\D+/', '', $phone);
 
 // ------------------------------------
-// 3️⃣ Detect Carrier (MTN or Orange)
+// 3️⃣ Detect carrier
 // ------------------------------------
-$carrier = null;
+$carrier = match (true) {
+    preg_match('/^(65|67|68|650|651|652|653|654|680|681)/', $phone) => 'MTN',
+    preg_match('/^(69|690|691|692|693|694|695|696|697|698)/', $phone) => 'ORANGE',
+    default => 'UNKNOWN',
+};
 
-if (preg_match('/^(67|68|650|651|652|653|654|680|681|682|683|684)/', $phone)) {
-    $carrier = 'MTN';
-} elseif (preg_match('/^(69|690|691|692|693|694|695|696|697|698)/', $phone)) {
-    $carrier = 'ORANGE';
-} else {
-    $carrier = "UNKNOWN";
-}
-
-if ($carrier === "UNKNOWN") {
+if ($carrier === 'UNKNOWN') {
     json_out(['error' => 'Unsupported phone number'], 400);
 }
 
 // ------------------------------------
-// 4️⃣ Check duplicate session (idempotency)
-// Prevents WooCommerce from creating multiple sessions
+// 4️⃣ Idempotency check
 // ------------------------------------
-$stmt = $pdo->prepare("SELECT * FROM sessions WHERE merchant_id = :m AND order_id = :o LIMIT 1");
+$stmt = $pdo->prepare("
+    SELECT * FROM sessions 
+    WHERE merchant_id = :m AND order_id = :o 
+    LIMIT 1
+");
 $stmt->execute(['m' => $merchantId, 'o' => $orderId]);
 $existing = $stmt->fetch(PDO::FETCH_ASSOC);
 
@@ -80,7 +78,7 @@ if ($existing) {
 }
 
 // ------------------------------------
-// 5️⃣ Insert NEW session
+// 5️⃣ Insert new session
 // ------------------------------------
 $stmt = $pdo->prepare("
     INSERT INTO sessions (
@@ -108,12 +106,12 @@ $stmt = $pdo->prepare("
 ");
 
 $stmt->execute([
-    ':merchant'  => $merchantId,
-    ':order_id'  => $orderId,
-    ':amount'    => $amount,
-    ':currency'  => $currency,
-    ':phone'     => $phone,
-    ':carrier'   => $carrier,
+    ':merchant' => $merchantId,
+    ':order_id' => $orderId,
+    ':amount'   => $amount,
+    ':currency' => $currency,
+    ':phone'    => $phone,
+    ':carrier'  => $carrier,
 ]);
 
 $sessionId = $stmt->fetchColumn();
