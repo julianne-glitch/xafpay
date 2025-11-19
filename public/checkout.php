@@ -1,5 +1,5 @@
 <?php
-require_once __DIR__ . '/../logger.php';
+require_once __DIR__ . '/../api/logger.php';
 log_event("checkout.php accessed", $_GET);
 
 // ----------------------------------------------
@@ -21,7 +21,6 @@ $orderId  = $_GET['order_id'] ?? null;
 $amount   = $_GET['amount'] ?? null;
 $currency = $_GET['currency'] ?? 'XAF';
 
-// Missing data → show simple error
 if (!$orderId || !$amount) {
     echo "<h2>XafPay Checkout</h2>";
     echo "<p>Missing order information.</p>";
@@ -29,7 +28,7 @@ if (!$orderId || !$amount) {
 }
 
 // ----------------------------------------------
-// React Checkout URL (Prod)
+// Redirect to React Checkout
 // ----------------------------------------------
 $reactCheckout = "https://checkout.xafpay.com/?order_id={$orderId}&amount={$amount}&currency={$currency}";
 

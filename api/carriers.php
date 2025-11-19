@@ -1,13 +1,7 @@
 <?php
-
-require_once __DIR__ . '/../config.php';
-require_once __DIR__ . '/logger.php';
-
+require_once __DIR__ . '/../logger.php';
 log_event("carriers.php accessed", $_GET);
 
-// --------------------------------------------
-// CORS — required for React Apps
-// --------------------------------------------
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: GET, OPTIONS");
 header("Access-Control-Allow-Headers: Content-Type, Authorization");
@@ -17,31 +11,33 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     exit;
 }
 
-header('Content-Type: application/json');
+require_once __DIR__ . '/../../config.php';
+$pdo = db_connect();
 
 try {
-    $pdo = db_connect();
-
+    // Match your actual table structure
     $stmt = $pdo->query("
-        SELECT id, carrier_code, carrier_name, is_active
+        SELECT 
+            id,
+            name,
+            code,
+            merchant_number,
+            api_user,
+            api_key
         FROM carriers
-        ORDER BY carrier_name ASC
+        ORDER BY id ASC
     ");
 
-    $carriers = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
     json_out([
-        'ok'   => true,
-        'data' => $carriers
+        'ok' => true,
+        'data' => $rows
     ]);
 
 } catch (Throwable $e) {
-
-    log_event("carriers.php error", $e->getMessage());
-
     json_out([
-        'ok'      => false,
-        'error'   => 'Internal server error',
-        'details' => $e->getMessage()
+        'ok' => false,
+        'error' => $e->getMessage()
     ], 500);
 }
