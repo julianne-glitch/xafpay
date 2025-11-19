@@ -1,58 +1,48 @@
 <?php
 require_once __DIR__ . '/logger.php';
+require_once __DIR__ . '/../config.php';
+
 log_event("PAY_START", file_get_contents("php://input"));
 
+// --------------------------------------------------
+// CORS
+// --------------------------------------------------
 header("Access-Control-Allow-Origin: *");
-header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
+header("Access-Control-Allow-Methods: POST, OPTIONS");
 header("Access-Control-Allow-Headers: Content-Type, Authorization");
-
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     http_response_code(200);
     exit;
 }
 
-require_once __DIR__ . '/../config.php';
-require_once __DIR__ . '/_auth.php';     // FULL merchant authentication
 use GuzzleHttp\Client;
 
 $pdo   = db_connect();
 $input = json_decode(file_get_contents("php://input"), true);
 
-// -----------------------------------------
-// 1️⃣ Merchant Authentication (from _auth.php)
-// -----------------------------------------
-$merchant = require __DIR__ . '/_auth.php';  // returns merchant row
-$merchantId = $merchant['id'];
-$secretKey  = $merchant['secret_key'];
-
-// -----------------------------------------
-// 2️⃣ Validate required field(s)
-// -----------------------------------------
+// --------------------------------------------------
+// 1️⃣ Validate order_id
+// --------------------------------------------------
 $orderId = $input['order_id'] ?? '';
-
 if (!$orderId) {
     json_out(['error' => 'order_id required'], 400);
 }
 
-// -----------------------------------------
-// 3️⃣ Fetch Session (amount + payer + carrier)
-// -----------------------------------------
+// --------------------------------------------------
+// 2️⃣ Fetch Session (NO MERCHANT AUTH HERE)
+// --------------------------------------------------
 $stmt = $pdo->prepare("
     SELECT * FROM sessions 
-    WHERE order_id = :order AND merchant_id = :m 
+    WHERE order_id = :order
     LIMIT 1
 ");
-$stmt->execute([
-    'order' => $orderId,
-    'm'     => $merchantId
-]);
+$stmt->execute(['order' => $orderId]);
 $session = $stmt->fetch(PDO::FETCH_ASSOC);
 
 if (!$session) {
     json_out(['error' => 'Session not found'], 404);
 }
 
-// Enforce DB values
 $sessionId = $session['id'];
 $amount    = $session['amount'];
 $phone     = $session['phone_number'];
@@ -62,9 +52,9 @@ if ($carrier !== 'MTN') {
     json_out(['error' => 'Only MTN supported'], 400);
 }
 
-// -----------------------------------------
-// 4️⃣ Idempotency Check
-// -----------------------------------------
+// --------------------------------------------------
+// 3️⃣ Idempotency Check
+// --------------------------------------------------
 $stmt = $pdo->prepare("SELECT * FROM payments WHERE session_id = ?");
 $stmt->execute([$sessionId]);
 $existing = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -84,9 +74,9 @@ if ($existing) {
     ]);
 }
 
-// -----------------------------------------
-// 5️⃣ MTN Token
-// -----------------------------------------
+// --------------------------------------------------
+// 4️⃣ MTN Token
+// --------------------------------------------------
 $cfg = mtn_cfg();
 
 try {
@@ -107,9 +97,9 @@ try {
     json_out(['error' => 'MTN token error', 'detail' => $e->getMessage()], 500);
 }
 
-// -----------------------------------------
-// 6️⃣ MTN Request To Pay
-// -----------------------------------------
+// --------------------------------------------------
+// 5️⃣ MTN Request To Pay
+// --------------------------------------------------
 $referenceId = uuidv4();
 
 $body = [
@@ -140,13 +130,12 @@ try {
     json_out(['error' => 'MTN requestToPay error', 'detail' => $e->getMessage()], 500);
 }
 
-// -----------------------------------------
-// 7️⃣ Insert Payment Row
-// -----------------------------------------
+// --------------------------------------------------
+// 6️⃣ Insert Payment Row
+// --------------------------------------------------
 $stmt = $pdo->prepare("
     INSERT INTO payments (
         session_id,
-        merchant_id,
         order_id,
         phone_number,
         carrier,
@@ -159,7 +148,6 @@ $stmt = $pdo->prepare("
         updated_at
     ) VALUES (
         :session,
-        :merchant,
         :order_id,
         :phone,
         'MTN',
@@ -175,18 +163,15 @@ $stmt = $pdo->prepare("
 
 $stmt->execute([
     ':session'  => $sessionId,
-    ':merchant' => $merchantId,
     ':order_id' => $orderId,
     ':phone'    => $phone,
     ':amount'   => $amount,
     ':ref'      => $referenceId
 ]);
 
-// -----------------------------------------
-// 8️⃣ Final Response to React Checkout
-// -----------------------------------------
-$statusUrl = base_url()."/api/status.php?ref={$referenceId}";
-
+// --------------------------------------------------
+// 7️⃣ Final Response
+// --------------------------------------------------
 json_out([
     'ok'           => true,
     'provider'     => 'MTN',
@@ -194,5 +179,5 @@ json_out([
     'order_id'     => $orderId,
     'amount'       => $amount,
     'currency'     => 'XAF',
-    'status_url'   => $statusUrl
+    'status_url'   => base_url()."/api/status.php?ref={$referenceId}"
 ]);
