@@ -1,10 +1,27 @@
 <?php
 
 // ------------------------------------------------------------
-// LOGGER
+// Safe Logger for Admin Logs Viewer
 // ------------------------------------------------------------
 require_once __DIR__ . '/logger.php';
-log_event("ADMIN_LOG_VIEW_ATTEMPT", ['ip' => $_SERVER['REMOTE_ADDR'] ?? null]);
+
+// Safe json_out fallback (in case parent forgot to load it)
+if (!function_exists('json_out')) {
+    function json_out($arr, $code = 200) {
+        http_response_code($code);
+        header("Content-Type: application/json");
+        echo json_encode(
+            $arr,
+            JSON_UNESCAPED_SLASHES |
+            JSON_UNESCAPED_UNICODE
+        );
+        exit;
+    }
+}
+
+log_event("ADMIN_LOG_VIEW_ATTEMPT", [
+    'ip' => $_SERVER['REMOTE_ADDR'] ?? null
+]);
 
 // ------------------------------------------------------------
 // CORS
@@ -23,26 +40,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 // CONFIG + AUTH
 // ------------------------------------------------------------
 require_once __DIR__ . '/../../config.php';
+require_once __DIR__ . '/../db.php';
 require_once __DIR__ . '/../_auth_admin.php';
 
-$pdo = db_connect();
-$admin = require_admin($pdo);   // only admin users allowed
+$pdo = db();
+$admin = require_admin($pdo);   // strict admin authentication
 
 // ------------------------------------------------------------
-// Log file location (same as logger.php)
+// LOG FILE
 // ------------------------------------------------------------
 $logFile = "/tmp/xafpay.log";
 
-// If file doesn't exist → empty output
 if (!file_exists($logFile)) {
     json_out(['ok' => true, 'count' => 0, 'data' => []]);
 }
 
 // ------------------------------------------------------------
-// Efficiently read last 200 lines
+// Read last ~200 lines efficiently
 // ------------------------------------------------------------
 $fp = fopen($logFile, "r");
-$bufferSize = 8192;
+$bufferSize = 8192; // 8KB sliding window
 $lines = [];
 $pos = -1;
 
@@ -67,10 +84,10 @@ while (count($lines) < 200 && -$pos < $fileSize) {
 fclose($fp);
 
 // ------------------------------------------------------------
-// Return JSON
+// JSON output
 // ------------------------------------------------------------
 json_out([
     'ok'    => true,
     'count' => count($lines),
-    'data'  => array_reverse($lines)  // newest last for UI scrolling
+    'data'  => array_reverse($lines) // newest LAST for UI
 ]);

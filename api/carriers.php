@@ -1,9 +1,13 @@
 <?php
+
 require_once __DIR__ . '/logger.php';
 require_once __DIR__ . '/../config.php';
 
-log_event("carriers.php accessed", $_GET);
+log_event("CARRIERS_ENDPOINT_HIT", $_GET);
 
+// ------------------------------------------------------------
+// CORS
+// ------------------------------------------------------------
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: GET, OPTIONS");
 header("Access-Control-Allow-Headers: Content-Type, Authorization");
@@ -15,16 +19,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 
 $pdo = db_connect();
 
+// ------------------------------------------------------------
+// Fetch carriers
+// ------------------------------------------------------------
 try {
-    // Match your actual table structure
+
+    // ⚠️ DO NOT EXPOSE api_user or api_key in public API responses
     $stmt = $pdo->query("
         SELECT 
             id,
             name,
             code,
-            merchant_number,
-            api_user,
-            api_key
+            merchant_number
         FROM carriers
         ORDER BY id ASC
     ");
@@ -32,13 +38,16 @@ try {
     $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
     json_out([
-        'ok' => true,
+        'ok'   => true,
         'data' => $rows
     ]);
 
 } catch (Throwable $e) {
+
+    log_event("CARRIERS_QUERY_ERROR", $e->getMessage());
+
     json_out([
-        'ok' => false,
-        'error' => $e->getMessage()
+        'ok'    => false,
+        'error' => 'Database error: ' . $e->getMessage()
     ], 500);
 }

@@ -1,67 +1,116 @@
 <?php
+
 require_once __DIR__ . '/config.php';
+require_once __DIR__ . '/api/logger.php';
+
+log_event("TEST_BACKEND_HIT", $_SERVER['REMOTE_ADDR'] ?? 'unknown');
+
+header("Access-Control-Allow-Origin: *");
+header("Access-Control-Allow-Methods: GET, OPTIONS");
+header("Access-Control-Allow-Headers: Content-Type, Authorization");
+
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+    http_response_code(200);
+    exit;
+}
 
 $report = [
-    'status' => 'ok',
-    'details' => []
+    'ok'      => true,
+    'service' => 'XafPay Backend Diagnostic',
+    'env'     => app_env(),
+    'time'    => gmdate('c'),
+    'checks'  => []
 ];
 
 try {
     $pdo = db_connect();
-    $report['details']['db_connection'] = '✅ Connected successfully';
+    $report['checks']['db_connection'] = "✅ PostgreSQL connected";
 
-    // --- 1️⃣ Carriers ---
-    $carriers = $pdo->query("SELECT id, name, code, phone_number, country, active FROM carriers")->fetchAll();
-    $report['details']['carriers'] = [
-        'total' => count($carriers),
-        'entries' => $carriers,
-        'mtn_exists' => !!array_filter($carriers, fn($c) => $c['code']=='MTN'),
-        'orange_exists' => !!array_filter($carriers, fn($c) => $c['code']=='ORANGE')
-    ];
+    // -------------------------------------------------------------
+    // 1️⃣ CARRIERS
+    // -------------------------------------------------------------
+    try {
+        $rows = $pdo->query("
+            SELECT id, name, code, merchant_number, active 
+            FROM carriers
+            ORDER BY id ASC
+        ")->fetchAll();
 
-    // --- 2️⃣ Sessions ---
-    $sessions = $pdo->query("SELECT * FROM sessions ORDER BY created_at DESC LIMIT 5")->fetchAll();
-    $report['details']['sessions'] = ['last_5' => $sessions];
+        $report['checks']['carriers'] = [
+            'count' => count($rows),
+            'mtn_exists'    => !!array_filter($rows, fn($c) => $c['code'] === 'MTN'),
+            'orange_exists' => !!array_filter($rows, fn($c) => $c['code'] === 'ORANGE'),
+            'entries' => $rows
+        ];
+    } catch (Throwable $e) {
+        $report['checks']['carriers'] = "❌ " . $e->getMessage();
+    }
 
-    // Insert test session
-    $stmt = $pdo->prepare("INSERT INTO sessions(customer_id, carrier_code, amount) VALUES(:customer_id, :carrier_code, :amount) RETURNING id");
-    $stmt->execute([
-        ':customer_id' => '00000000-0000-0000-0000-000000000000', // dummy UUID
-        ':carrier_code' => 'MTN',
-        ':amount' => 123.45
-    ]);
-    $report['details']['sessions']['inserted_id'] = $stmt->fetch()['id'];
+    // -------------------------------------------------------------
+    // 2️⃣ SESSIONS
+    // -------------------------------------------------------------
+    try {
+        $rows = $pdo->query("
+            SELECT id, order_id, amount, currency, phone_number, carrier_code, status, created_at
+            FROM sessions
+            ORDER BY created_at DESC
+            LIMIT 10
+        ")->fetchAll();
 
-    // --- 3️⃣ Transactions ---
-    $transactions = $pdo->query("SELECT * FROM transactions ORDER BY created_at DESC LIMIT 5")->fetchAll();
-    $report['details']['transactions'] = ['last_5' => $transactions];
+        $report['checks']['sessions'] = [
+            'count_last_10' => count($rows),
+            'entries' => $rows
+        ];
+    } catch (Throwable $e) {
+        $report['checks']['sessions'] = "❌ " . $e->getMessage();
+    }
 
-    $stmt = $pdo->prepare("INSERT INTO transactions(session_id, amount, status) VALUES(:session_id, :amount, :status) RETURNING id");
-    $stmt->execute([
-        ':session_id' => '00000000-0000-0000-0000-000000000000', // dummy session UUID
-        ':amount' => 123.45,
-        ':status' => 'pending'
-    ]);
-    $report['details']['transactions']['inserted_id'] = $stmt->fetch()['id'];
+    // -------------------------------------------------------------
+    // 3️⃣ PAYMENTS (modern schema)
+    // -------------------------------------------------------------
+    try {
+        $rows = $pdo->query("
+            SELECT reference_id, order_id, amount, currency, status, created_at
+            FROM payments
+            ORDER BY created_at DESC
+            LIMIT 10
+        ")->fetchAll();
 
-    // --- 4️⃣ Merchants ---
-    $merchants = $pdo->query("SELECT * FROM merchant_accounts ORDER BY created_at DESC LIMIT 5")->fetchAll();
-    $report['details']['merchants'] = ['last_5' => $merchants];
+        $report['checks']['payments'] = [
+            'count_last_10' => count($rows),
+            'entries' => $rows
+        ];
+    } catch (Throwable $e) {
+        $report['checks']['payments'] = "❌ " . $e->getMessage();
+    }
 
-    $stmt = $pdo->prepare("INSERT INTO merchant_accounts(name, phone_number, email) VALUES(:name, :phone, :email) RETURNING id");
-    $stmt->execute([
-        ':name' => 'Test Merchant',
-        ':phone' => '677123456',
-        ':email' => 'test@merchant.com'
-    ]);
-    $report['details']['merchants']['inserted_id'] = $stmt->fetch()['id'];
+    // -------------------------------------------------------------
+    // 4️⃣ MERCHANTS (modern schema)
+    // -------------------------------------------------------------
+    try {
+        $rows = $pdo->query("
+            SELECT id, merchant_name, api_key, is_active, created_at
+            FROM merchants
+            ORDER BY created_at DESC
+            LIMIT 10
+        ")->fetchAll();
 
-    header('Content-Type: application/json');
-    echo json_encode($report, JSON_PRETTY_PRINT);
+        $report['checks']['merchants'] = [
+            'count_last_10' => count($rows),
+            'entries' => $rows
+        ];
+    } catch (Throwable $e) {
+        $report['checks']['merchants'] = "❌ " . $e->getMessage();
+    }
 
-} catch (Exception $e) {
-    echo json_encode([
-        'status' => 'error',
-        'message' => $e->getMessage()
-    ], JSON_PRETTY_PRINT);
+    // -------------------------------------------------------------
+    // Return JSON
+    // -------------------------------------------------------------
+    json_out($report);
+
+} catch (Throwable $e) {
+    json_out([
+        'ok'    => false,
+        'error' => $e->getMessage()
+    ], 500);
 }

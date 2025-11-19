@@ -7,7 +7,7 @@ log_event("STATUS_CHECK_START", $_GET);
 // CORS
 // -------------------------------------------------------------
 header("Access-Control-Allow-Origin: *");
-header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
+header("Access-Control-Allow-Methods: GET, OPTIONS");
 header("Access-Control-Allow-Headers: Content-Type, Authorization");
 
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
@@ -25,25 +25,25 @@ $cfg = mtn_cfg();
 $ref = $_GET['ref'] ?? '';
 
 if (!$ref) {
-    json_out(['error' => 'ref required'], 400);
+    json_out(['ok' => false, 'error' => 'ref required'], 400);
 }
 
 $pdo = db_connect();
 
 // -------------------------------------------------------------
-// 1️⃣ Fetch payment row
+// 1️⃣ Fetch payment
 // -------------------------------------------------------------
 $stmt = $pdo->prepare("SELECT * FROM payments WHERE reference_id = ?");
 $stmt->execute([$ref]);
 $payment = $stmt->fetch(PDO::FETCH_ASSOC);
 
 if (!$payment) {
-    json_out(['error' => 'Payment not found'], 404);
+    json_out(['ok' => false, 'error' => 'Payment not found'], 404);
 }
 
 $orderId     = $payment['order_id'];
 $sessionId   = $payment['session_id'];
-$alreadySent = $payment['callback_sent'] ?? false;
+$alreadySent = (bool)($payment['callback_sent'] ?? false);
 
 // -------------------------------------------------------------
 // 2️⃣ Get MTN Token
@@ -58,16 +58,19 @@ try {
         ],
     ]);
 
-    $token = json_decode($resp->getBody(), true)['access_token'] ?? null;
+    $json  = json_decode($resp->getBody(), true);
+    $token = $json['access_token'] ?? null;
 
-    if (!$token) throw new Exception("Token missing");
+    if (!$token) {
+        throw new Exception("Missing access_token from MTN");
+    }
 
 } catch (Throwable $e) {
-    json_out(['error' => 'MTN token error', 'details' => $e->getMessage()], 500);
+    json_out(['ok' => false, 'error' => 'MTN token error', 'details' => $e->getMessage()], 500);
 }
 
 // -------------------------------------------------------------
-// 3️⃣ Query MTN for Status
+// 3️⃣ Query MTN API for Transaction Status
 // -------------------------------------------------------------
 try {
     $resp = $client->get("/collection/v1_0/requesttopay/{$ref}", [
@@ -78,68 +81,13 @@ try {
         ],
     ]);
 
-    $data = json_decode($resp->getBody(), true);
+    $data      = json_decode($resp->getBody(), true);
     $mtnStatus = strtoupper($data['status'] ?? 'UNKNOWN');
 
 } catch (Throwable $e) {
-    json_out(['error' => 'MTN status error', 'details' => $e->getMessage()], 500);
+    json_out(['ok' => false, 'error' => 'MTN status error', 'details' => $e->getMessage()], 500);
 }
 
 // -------------------------------------------------------------
-// 4️⃣ Normalize status (store consistent format)
-// -------------------------------------------------------------
-$frontendStatus = match ($mtnStatus) {
-    'SUCCESSFUL' => 'SUCCESS',
-    'FAILED'     => 'FAILED',
-    default      => 'PENDING',
-};
-
-// -------------------------------------------------------------
-// 5️⃣ Update DB (normalized status only)
-// -------------------------------------------------------------
-$pdo->prepare("
-    UPDATE payments
-    SET status = :status, updated_at = NOW()
-    WHERE reference_id = :ref
-")->execute([
-    'status' => $frontendStatus,
-    'ref'    => $ref
-]);
-
-$pdo->prepare("
-    UPDATE sessions
-    SET status = :status, updated_at = NOW()
-    WHERE id = :session
-")->execute([
-    'status'  => $frontendStatus,
-    'session' => $sessionId
-]);
-
-// -------------------------------------------------------------
-// 6️⃣ WooCommerce callback — send ONCE only
-// -------------------------------------------------------------
-if ($frontendStatus === 'SUCCESS' && !$alreadySent) {
-
-    // Mark before sending to avoid double-callback race condition
-    $pdo->prepare("
-        UPDATE payments SET callback_sent = TRUE WHERE reference_id = ?
-    ")->execute([$ref]);
-
-    $signature = hash_hmac('sha256', $orderId . 'success', hmac_secret());
-
-    $wcCallback = base_url()
-        . "/wc-api/xafpay_callback?order_id={$orderId}&status=success&signature={$signature}";
-
-    @file_get_contents($wcCallback);
-
-    log_event("WC_CALLBACK_SENT", $wcCallback);
-}
-
-// -------------------------------------------------------------
-// 7️⃣ Final Output
-// -------------------------------------------------------------
-json_out([
-    'reference_id' => $ref,
-    'status'       => $frontendStatus,
-    'provider_raw' => $data
-]);
+// 4️⃣ Normalize MTN → Frontend status
+// ------------------------------------------------------

@@ -3,6 +3,9 @@
 // payments.php — List payments for merchant dashboard
 // ------------------------------------------------------------
 
+ini_set('display_errors', 1);
+error_reporting(E_ALL);
+
 require_once __DIR__ . '/logger.php';
 require_once __DIR__ . '/../config.php';
 require_once __DIR__ . '/_auth.php';
@@ -20,8 +23,9 @@ log_event("payments.php raw_body", $raw);
 // CORS
 // ------------------------------------------------------------
 header("Access-Control-Allow-Origin: *");
-header("Access-Control-Allow-Methods: GET, OPTIONS");
+header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
 header("Access-Control-Allow-Headers: Content-Type, Authorization, X-API-KEY, X-SIGNATURE, X-TIMESTAMP");
+header("Content-Type: application/json");
 
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     http_response_code(200);
@@ -29,14 +33,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 }
 
 // ------------------------------------------------------------
-// Optional Merchant Auth (safe — never breaks)
+// Merchant Auth (optional)
 // ------------------------------------------------------------
 $pdo = db_connect();
 $auth = optional_hmac_auth($pdo);
 $merchant = $auth['merchant'] ?? null;
 
-// If no merchant auth → default to merchant_id = 1
-$merchantId = $merchant['id'] ?? 1;
+// Default merchant UUID (same as sessions.php)
+$merchantId = $merchant['id'] ?? "185b2203-ec89-4d7d-9568-f48dd9311120";
 
 log_event("payments.php merchant_detected", $merchantId);
 
@@ -44,29 +48,26 @@ log_event("payments.php merchant_detected", $merchantId);
 // Query last 50 payments for this merchant
 // ------------------------------------------------------------
 try {
+   $stmt = $pdo->prepare("
+    SELECT 
+        p.reference_id,
+        s.order_id,
+        p.session_id,
+        s.amount,             -- currency belongs to sessions
+        s.currency,
+        p.status,
+        p.created_at,
+        s.phone_number,
+        s.carrier_code
+    FROM payments p
+    LEFT JOIN sessions s ON s.id = p.session_id
+    WHERE p.merchant_id = :mid
+    ORDER BY p.created_at DESC
+    LIMIT 50
+");
 
-    $stmt = $pdo->prepare("
-        SELECT 
-            p.reference_id,
-            p.order_id,
-            p.session_id,
-            p.amount,
-            p.currency,
-            p.status,
-            p.created_at,
-            s.phone_number,
-            s.carrier_code
-        FROM payments p
-        LEFT JOIN sessions s ON s.id = p.session_id
-        WHERE p.merchant_id = :mid
-        ORDER BY p.created_at DESC
-        LIMIT 50
-    ");
 
-    $stmt->execute([
-        'mid' => $merchantId
-    ]);
-
+    $stmt->execute(['mid' => $merchantId]);
     $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
     log_event("payments.php result_count", count($rows));
@@ -78,7 +79,6 @@ try {
     ]);
 
 } catch (Throwable $e) {
-
     log_event("payments.php exception", $e->getMessage());
 
     json_out([
@@ -86,4 +86,3 @@ try {
         'error' => $e->getMessage()
     ], 500);
 }
-
