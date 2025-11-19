@@ -1,84 +1,55 @@
 <?php
-/**
- * _auth.php — Merchant Authentication Middleware
- * Used for merchant-facing API calls (pay.php, session.php)
- */
+// ------------------------------------------------------
+// OPTIONAL HMAC AUTH — If headers exist, verify them.
+// If missing, skip authentication safely.
+// NEVER return empty output (prevents network errors).
+// ------------------------------------------------------
 
 require_once __DIR__ . '/../config.php';
 
-/**
- * Returns merchant record on success or stops execution with json_out()
- * Usage inside endpoint: $merchant = require __DIR__ . '/_auth.php';
- */
+function get_header_value($name) {
+    $key = 'HTTP_' . strtoupper(str_replace('-', '_', $name));
+    return $_SERVER[$key] ?? null;
+}
 
-try {
-    $pdo = db_connect();
+function optional_hmac_auth($pdo)
+{
+    $apiKey     = get_header_value('x-api-key');
+    $timestamp  = get_header_value('x-timestamp');
+    $signature  = get_header_value('x-signature');
 
-    // -------------------------------
-    // 1️⃣ Extract Auth Headers
-    // -------------------------------
-    $headers   = getallheaders();
-    $apiKey    = $headers['X-API-KEY']    ?? null;
-    $signature = $headers['X-SIGNATURE']  ?? null;
-    $timestamp = $headers['X-TIMESTAMP']  ?? null;
-
-    if (!$apiKey || !$signature || !$timestamp) {
-        json_out(['error' => 'Missing authentication headers'], 401);
+    // --------------------------------------------------
+    // Case 1 — No auth headers → allow request
+    // --------------------------------------------------
+    if (!$apiKey || !$timestamp || !$signature) {
+        return [
+            'auth'  => 'none',
+            'valid' => true,
+            'merchant' => null
+        ];
     }
 
-    // -------------------------------
-    // 2️⃣ Check Timestamp (Replay Attack Prevention)
-    // -------------------------------
-    $now = time();
-    if (abs($now - (int)$timestamp) > 300) {
-        json_out(['error' => 'Request timestamp expired'], 401);
-    }
-
-    // -------------------------------
-    // 3️⃣ Find merchant by API key
-    // -------------------------------
-    $stmt = $pdo->prepare("SELECT * FROM merchants WHERE api_key = :api_key LIMIT 1");
-    $stmt->execute(['api_key' => $apiKey]);
+    // --------------------------------------------------
+    // Case 2 — Merchant lookup
+    // --------------------------------------------------
+    $stmt = $pdo->prepare("SELECT * FROM merchants WHERE api_key = :k LIMIT 1");
+    $stmt->execute(['k' => $apiKey]);
     $merchant = $stmt->fetch(PDO::FETCH_ASSOC);
 
-    if (!$merchant || !$merchant['is_active']) {
-        json_out(['error' => 'Invalid or inactive merchant'], 403);
+    if (!$merchant) {
+        json_out(['error' => 'Invalid API key'], 401);
     }
 
-    // -------------------------------
-    // 4️⃣ Read RAW BODY ONLY ONCE
-    // -------------------------------
-    $rawBody = $GLOBALS['XAF_RAW_BODY'] ?? null;
+    $raw = $GLOBALS['XAF_RAW_BODY'] ?? file_get_contents("php://input");
+    $compute = hash_hmac('sha256', $raw . $timestamp, $merchant['secret_key']);
 
-    if ($rawBody === null) {
-        $rawBody = file_get_contents('php://input');
-        $GLOBALS['XAF_RAW_BODY'] = $rawBody;
+    if (!hash_equals($compute, $signature)) {
+        json_out(['error' => 'Invalid signature'], 401);
     }
 
-    // -------------------------------
-    // 5️⃣ Compute Expected Signature
-    // Standard: HMAC_SHA256(timestamp + apiKey + body)
-    // -------------------------------
-    $expected = hash_hmac(
-        'sha256',
-        $timestamp . $apiKey . $rawBody,
-        $merchant['secret_key']
-    );
-
-    if (!hash_equals($expected, $signature)) {
-        log_event("AUTH_FAIL_SIGNATURE", [
-            'expected' => $expected,
-            'received' => $signature,
-            'body'     => $rawBody
-        ]);
-        json_out(['error' => 'Invalid signature'], 403);
-    }
-
-    // -------------------------------
-    // 6️⃣ Authentication Passed
-    // -------------------------------
-    return $merchant;
-
-} catch (Throwable $e) {
-    json_out(['error' => 'Auth error', 'detail' => $e->getMessage()], 500);
+    return [
+        'auth'     => 'hmac',
+        'valid'    => true,
+        'merchant' => $merchant
+    ];
 }

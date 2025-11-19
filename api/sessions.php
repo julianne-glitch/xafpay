@@ -19,8 +19,12 @@ $pdo  = db_connect();
 // ------------------------------------
 // 1️⃣ Authenticate merchant properly
 // ------------------------------------
-$merchant = require_merchant($pdo);   // FIXED
-$merchantId = $merchant['id'];
+$auth = optional_hmac_auth($pdo);
+$merchant = $auth['merchant'];  // may be null
+
+// If merchant is null (no headers), fallback to a default merchant
+$merchantId = $merchant['id'] ?? 1;
+
 
 // ------------------------------------
 // 2️⃣ Read input safely

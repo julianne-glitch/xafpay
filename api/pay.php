@@ -32,6 +32,10 @@ if (!$orderId) {
 
 // DB CONNECT
 $pdo = db_connect();
+$auth = optional_hmac_auth($pdo);
+$merchant = $auth['merchant'];
+$merchantId = $merchant['id'] ?? null;   // may be null and that is OK
+
 
 // FETCH SESSION
 $stmt = $pdo->prepare("SELECT * FROM sessions WHERE order_id = :order LIMIT 1");
