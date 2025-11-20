@@ -44,18 +44,33 @@ if (!defined('CONFIG_LOADED')) {
     }
 
     function mtn_cfg(): array {
-        return [
-            'env'        => envv('MTN_ENV', 'sandbox'),
-            'base'       => rtrim(envv('MTN_BASE', 'https://sandbox.momodeveloper.mtn.com'), '/'),
-            'subKey'     => envv('MTN_SUBSCRIPTION_KEY', ''),
-            'apiUser'    => envv('MTN_API_USER', ''),
-            'apiKey'     => envv('MTN_API_KEY', ''),
-            'currency'   => envv('MTN_CURRENCY', 'XAF'),
-            'payerMsisdn'=> preg_replace('/\D+/', '', envv('MTN_PAYER_MSISDN', '')),
-            'payerMsg'   => envv('MTN_PAYER_MESSAGE', 'Payment for order'),
-            'payeeNote'  => envv('MTN_PAYEE_NOTE', 'XafPay'),
-        ];
+
+    // 1) Read raw .env value
+    $raw = envv('MTN_BASE', 'sandbox.momodeveloper.mtn.com');
+
+    // 2) Trim whitespace + remove newlines
+    $clean = trim(str_replace(["\n", "\r"], '', $raw));
+
+    // 3) Ensure full HTTPS URL
+    if (!str_starts_with($clean, 'http')) {
+        $clean = 'https://' . $clean;
     }
+
+    // 4) Remove trailing slash
+    $base = rtrim($clean, '/');
+
+    return [
+        'env'        => envv('MTN_ENV', 'sandbox'),
+        'base'       => $base,
+        'subKey'     => envv('MTN_SUBSCRIPTION_KEY', ''),
+        'apiUser'    => envv('MTN_API_USER', ''),
+        'apiKey'     => envv('MTN_API_KEY', ''),
+        'currency'   => envv('MTN_CURRENCY', 'XAF'),
+        'payerMsisdn'=> preg_replace('/\D+/', '', envv('MTN_PAYER_MSISDN', '')),
+        'payerMsg'   => envv('MTN_PAYER_MESSAGE', 'Payment for order'),
+        'payeeNote'  => envv('MTN_PAYEE_NOTE', 'XafPay'),
+    ];
+}
 
     function db_cfg(): array {
         return [
