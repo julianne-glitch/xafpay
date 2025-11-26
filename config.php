@@ -71,6 +71,15 @@ if (!defined('CONFIG_LOADED')) {
         'payeeNote'  => envv('MTN_PAYEE_NOTE', 'XafPay'),
     ];
 }
+    function tranzak_cfg(): array {
+        return [
+            'base'          => rtrim(envv('TRANZAK_BASE_URL', 'https://sandbox.dsapi.tranzak.me'), '/'),
+            'appId'         => envv('TRANZAK_APP_ID', ''),
+            'apiKey'        => envv('TRANZAK_API_KEY', ''),
+            'webhookId'     => envv('TRANZAK_WEBHOOK_ID', ''),
+            'webhookSecret' => envv('TRANZAK_WEBHOOK_SECRET', ''),  // can be empty in sandbox
+        ];
+    }
 
     function db_cfg(): array {
         return [
