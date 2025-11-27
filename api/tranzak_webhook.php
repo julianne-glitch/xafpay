@@ -15,6 +15,8 @@ $logLine = date('c') . " | HEADERS: " . json_encode($headers) . " | BODY: " . $r
 // Make sure this path exists and is writable, or change it
 $logFile = __DIR__ . '/../tranzak_webhook.log';
 file_put_contents($logFile, $logLine, FILE_APPEND);
+//log php error
+error_log('[TranzakWebhook] ' . $logLine);
 
 // 3) Decode JSON
 $data = json_decode($raw, true);
