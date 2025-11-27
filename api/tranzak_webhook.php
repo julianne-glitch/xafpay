@@ -15,7 +15,7 @@ $logLine = date('c') . " | HEADERS: " . json_encode($headers) . " | BODY: " . $r
 // Make sure this path exists and is writable, or change it
 $logFile = __DIR__ . '/../tranzak_webhook.log';
 file_put_contents($logFile, $logLine, FILE_APPEND);
-//log php error
+// log into PHP error log as well
 error_log('[TranzakWebhook] ' . $logLine);
 
 // 3) Decode JSON
@@ -44,61 +44,76 @@ if (!empty($secret)) {
     }
 }
 
-// 5) Extract basic fields (you’ll confirm names from the log file)
-$status = $data['status']           ?? $data['txStatus']        ?? null;
-$ref    = $data['mchTransactionRef']?? $data['merchantRef']     ?? null;
-$amount = $data['amount']           ?? null;
+// 5️⃣ Extract useful fields from Tranzak payload
+$resource = $data['resource'] ?? [];
 
-// TODO (later): update your DB here once we know the exact field names
-// 5️⃣ Extract useful fields
-$status = $data['resource']['status'] ?? $data['status'] ?? null;
-$orderRef = $data['resource']['mchTransactionRef'] ?? $data['mchTransactionRef'] ?? null;
-$txId = $data['resource']['transactionId'] ?? $data['transactionId'] ?? null;
-$amount = $data['resource']['amount'] ?? $data['amount'] ?? null;
+$status   = $resource['status']
+         ?? $resource['transactionStatus']
+         ?? null;
+
+$orderRef = $resource['mchTransactionRef'] ?? null;      // e.g. TEST-1764251365
+$txId     = $resource['transactionId']     ?? null;      // e.g. TX2511271351C8662OOP
+$amount   = $resource['amount']            ?? 0;
 
 // 6️⃣ Save full webhook payload (for audit)
 try {
     $pdo = db_connect();
 
-    $stmt = $pdo->prepare("INSERT INTO webhooks (reference_id, payload) VALUES (:ref, :payload)");
+    $stmt = $pdo->prepare("
+        INSERT INTO webhooks (reference_id, payload)
+        VALUES (:ref, :payload)
+    ");
     $stmt->execute([
-        'ref' => $orderRef ?? $txId ?? 'unknown',
-        'payload' => json_encode($data)
+        ':ref'     => $orderRef ?: $txId ?: 'unknown',
+        ':payload' => json_encode($data),
     ]);
-
-    // 7️⃣ Update payments + sessions if successful
-    if (in_array(strtoupper($status), ['SUCCESS', 'SUCCESSFUL', 'REQUEST.COMPLETED'])) {
-        // Update payments table
-        $stmt = $pdo->prepare("
-            UPDATE payments 
-            SET status = 'successful', reference_id = :ref, updated_at = NOW()
-            WHERE id IN (
-                SELECT p.id FROM payments p 
-                JOIN sessions s ON s.id = p.session_id 
-                WHERE s.order_id = :orderRef
-            )
-        ");
-        $stmt->execute(['ref' => $txId, 'orderRef' => $orderRef]);
-
-        // Update sessions table
-        $stmt2 = $pdo->prepare("
-            UPDATE sessions
-            SET status = 'completed', updated_at = NOW()
-            WHERE order_id = :orderRef
-        ");
-        $stmt2->execute(['orderRef' => $orderRef]);
-
-        error_log("[TranzakWebhook] ✅ Order $orderRef marked successful");
-    }
-
 } catch (Throwable $e) {
-    file_put_contents($logFile,
-        date('c') . " | DB ERROR: " . $e->getMessage() . PHP_EOL,
+    file_put_contents(
+        $logFile,
+        date('c') . " | DB INSERT ERROR: " . $e->getMessage() . PHP_EOL,
         FILE_APPEND
     );
 }
 
+// 7️⃣ Update payments + sessions if successful
+if (in_array(strtoupper($status), ['SUCCESS', 'SUCCESSFUL', 'COMPLETED'])) {
+    try {
+        // Update payments table
+        $stmt = $pdo->prepare("
+            UPDATE payments 
+            SET status = 'successful',
+                reference_id = :tx,
+                response_payload = :payload,
+                updated_at = NOW()
+            WHERE reference_id = :ref
+               OR session_id IN (
+                    SELECT id FROM sessions WHERE order_id = :ref
+               )
+        ");
+        $stmt->execute([
+            ':tx'      => $txId,
+            ':payload' => json_encode($data),
+            ':ref'     => $orderRef,
+        ]);
+
+        // Optionally also mark sessions as completed
+        $stmt2 = $pdo->prepare("
+            UPDATE sessions
+            SET status = 'completed',
+                updated_at = NOW()
+            WHERE order_id = :orderRef
+        ");
+        $stmt2->execute([':orderRef' => $orderRef]);
+
+        error_log("[TranzakWebhook] ✅ Payment marked successful for $orderRef ($txId)");
+    } catch (Throwable $e) {
+        file_put_contents(
+            $logFile,
+            date('c') . " | DB UPDATE ERROR: " . $e->getMessage() . PHP_EOL,
+            FILE_APPEND
+        );
+    }
+}
+
 http_response_code(200);
 echo json_encode(['ok' => true]);
-
-
