@@ -31,7 +31,7 @@ log_event("pay.php input", $input);
 $amount   = floatval($input['amount'] ?? 0);
 $phone    = $input['phone'] ?? '';
 $carrier  = strtoupper(trim($input['carrier'] ?? 'MTN'));
-$currency = 'XAF'; // Tranzak collections expects XAF for Cameroon
+$currency = 'XAF'; // Required by Tranzak for Cameroon
 
 if (!$amount || !$phone) {
     json_out(["ok" => false, "error" => "Missing amount or phone"], 400);
@@ -91,24 +91,24 @@ try {
 // Tranzak CONFIG
 // ------------------------------------------------------------
 $cfg    = tranzak_cfg();
-$base   = rtrim($cfg['base'], "/");   // https://sandbox.dsapi.tranzak.me
+$base   = rtrim($cfg['base'], "/");   // Should now be https://sandbox.tranzak.me
 $appId  = $cfg['appId'];
 $apiKey = $cfg['apiKey'];
 
 // ------------------------------------------------------------
-// CORRECT COLLECTIONS ENDPOINT
+// LEGACY COLLECTIONS ENDPOINT (100% correct for your app)
 // ------------------------------------------------------------
-$url = $base . "/api/v1/collections/initiate";
+$url = $base . "/t/v1/collections/initiate";
 
 // ------------------------------------------------------------
-// CORRECT COLLECTIONS PAYLOAD
+// CORRECT COLLECTIONS PAYLOAD (legacy + updated)
 // ------------------------------------------------------------
 $payload = [
     "appId"           => $appId,
     "amount"          => $amount,
     "currency"        => "XAF",
     "countryCode"     => "CM",
-    "paymentChannel"  => $carrier,     // MTN or ORANGE
+    "paymentChannel"  => $carrier,       // MTN or ORANGE
     "customerNumber"  => $phoneE164,
     "reference"       => $orderId,
     "callbackUrl"     => base_url() . "/api/callback.php"

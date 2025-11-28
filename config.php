@@ -49,18 +49,14 @@ if (!defined('CONFIG_LOADED')) {
     }
 
     // --------------------------------------------------------
-    // MTN CONFIG (cleaned + corrected)
+    // MTN CONFIG
     // --------------------------------------------------------
     function mtn_cfg(): array {
-
-        // Always sanitize base domain/url
         $raw = envv('MTN_BASE', 'sandbox.momodeveloper.mtn.com');
         $clean = trim(str_replace(["\n", "\r"], '', $raw));
-
         if (!str_starts_with($clean, 'http')) {
             $clean = 'https://' . $clean;
         }
-
         $base = rtrim($clean, '/');
 
         return [
@@ -77,12 +73,13 @@ if (!defined('CONFIG_LOADED')) {
     }
 
     // --------------------------------------------------------
-    // TRANZAK CONFIG  (FIXED)
+    // TRANZAK CONFIG  (LEGACY API FIXED)
     // --------------------------------------------------------
     function tranzak_cfg(): array {
         return [
-            // ❗ FIXED: base must NOT include /api/v1 (pay.php appends it)
-            'base'          => rtrim(envv('TRANZAK_BASE_URL', 'https://sandbox.dsapi.tranzak.me'), '/'),
+            // ✔ Legacy API base
+            'base'          => rtrim(envv('TRANZAK_BASE_URL', 'https://sandbox.tranzak.me'), '/'),
+
             'appId'         => envv('TRANZAK_APP_ID', ''),
             'apiKey'        => envv('TRANZAK_API_KEY', ''),
             'webhookId'     => envv('TRANZAK_WEBHOOK_ID', ''),
@@ -117,7 +114,7 @@ if (!defined('CONFIG_LOADED')) {
     }
 
     // --------------------------------------------------------
-    // JSON OUTPUT (clean + safe)
+    // JSON OUTPUT
     // --------------------------------------------------------
     function json_out($data, int $code = 200): void {
         http_response_code($code);
@@ -142,7 +139,7 @@ if (!defined('CONFIG_LOADED')) {
     }
 
     // --------------------------------------------------------
-    // MERCHANT AUTH HELPERS
+    // MERCHANT AUTH
     // --------------------------------------------------------
     function require_merchant(PDO $pdo) {
         $headers = getallheaders();
