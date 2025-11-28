@@ -31,13 +31,13 @@ log_event("pay.php input", $input);
 $amount   = floatval($input['amount'] ?? 0);
 $phone    = $input['phone'] ?? '';
 $carrier  = strtoupper(trim($input['carrier'] ?? 'MTN'));
-$currency = 'XAF'; // Required by Tranzak for Cameroon
+$currency = 'XAF'; 
 
 if (!$amount || !$phone) {
     json_out(["ok" => false, "error" => "Missing amount or phone"], 400);
 }
 
-// Normalize phone (E164)
+// Normalize phone
 $phone = preg_replace('/\D/', '', $phone);
 $phoneE164 = (strlen($phone) === 9) ? "237$phone" : $phone;
 
@@ -91,24 +91,24 @@ try {
 // Tranzak CONFIG
 // ------------------------------------------------------------
 $cfg    = tranzak_cfg();
-$base   = rtrim($cfg['base'], "/");   // Should now be https://sandbox.tranzak.me
+$base   = rtrim($cfg['base'], "/");   
 $appId  = $cfg['appId'];
 $apiKey = $cfg['apiKey'];
 
 // ------------------------------------------------------------
-// LEGACY COLLECTIONS ENDPOINT (100% correct for your app)
+// CORRECT DSAPI COLLECTIONS ENDPOINT
 // ------------------------------------------------------------
-$url = $base . "/t/v1/collections/initiate";
+$url = $base . "/api/v1/collections/initiate";
 
 // ------------------------------------------------------------
-// CORRECT COLLECTIONS PAYLOAD (legacy + updated)
+// CORRECT DSAPI PAYLOAD
 // ------------------------------------------------------------
 $payload = [
     "appId"           => $appId,
     "amount"          => $amount,
     "currency"        => "XAF",
     "countryCode"     => "CM",
-    "paymentChannel"  => $carrier,       // MTN or ORANGE
+    "paymentChannel"  => $carrier,
     "customerNumber"  => $phoneE164,
     "reference"       => $orderId,
     "callbackUrl"     => base_url() . "/api/callback.php"
@@ -117,7 +117,7 @@ $payload = [
 log_event("pay.php payload_to_tranzak", $payload);
 
 // ------------------------------------------------------------
-// SEND TO TRANZAK (cURL)
+// SEND TO TRANZAK
 // ------------------------------------------------------------
 $ch = curl_init($url);
 curl_setopt_array($ch, [

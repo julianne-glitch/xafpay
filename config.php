@@ -8,24 +8,19 @@ use Dotenv\Dotenv;
 if (!defined('CONFIG_LOADED')) {
     define('CONFIG_LOADED', true);
 
-    // --------------------------------------------------------
-    // Composer autoload (Guzzle + Dotenv)
-    // --------------------------------------------------------
+    // Composer autoload (Dotenv / Guzzle if installed)
     if (file_exists(__DIR__ . '/vendor/autoload.php')) {
         require_once __DIR__ . '/vendor/autoload.php';
     }
 
-    // --------------------------------------------------------
-    // Load .env ONLY if present (local dev)
-    // Production uses Render environment variables
-    // --------------------------------------------------------
+    // Load .env only in local development
     if (class_exists(Dotenv::class) && file_exists(__DIR__ . '/.env')) {
         $dotenv = Dotenv::createImmutable(__DIR__);
         $dotenv->load();
     }
 
     // --------------------------------------------------------
-    // SAFE ENV HELPER
+    // ENV HELPER
     // --------------------------------------------------------
     function envv(string $key, ?string $default = null): ?string {
         $val = $_ENV[$key] ?? $_SERVER[$key] ?? getenv($key);
@@ -54,9 +49,11 @@ if (!defined('CONFIG_LOADED')) {
     function mtn_cfg(): array {
         $raw = envv('MTN_BASE', 'sandbox.momodeveloper.mtn.com');
         $clean = trim(str_replace(["\n", "\r"], '', $raw));
+
         if (!str_starts_with($clean, 'http')) {
             $clean = 'https://' . $clean;
         }
+
         $base = rtrim($clean, '/');
 
         return [
@@ -73,12 +70,12 @@ if (!defined('CONFIG_LOADED')) {
     }
 
     // --------------------------------------------------------
-    // TRANZAK CONFIG  (LEGACY API FIXED)
+    // TRANZAK CONFIG — FINAL & CORRECT
     // --------------------------------------------------------
     function tranzak_cfg(): array {
         return [
-            // ✔ Legacy API base
-            'base'          => rtrim(envv('TRANZAK_BASE_URL', 'https://sandbox.tranzak.me'), '/'),
+            // ✔ Correct Tranzak Sandbox Base URL
+            'base'          => rtrim(envv('TRANZAK_BASE_URL', 'https://sandbox.dsapi.tranzak.me'), '/'),
 
             'appId'         => envv('TRANZAK_APP_ID', ''),
             'apiKey'        => envv('TRANZAK_API_KEY', ''),
