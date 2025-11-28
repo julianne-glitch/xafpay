@@ -6,17 +6,19 @@ require_once __DIR__ . '/../config.php';
 header('Content-Type: application/json');
 header('Access-Control-Allow-Origin: *');
 
-if (!isset($_GET['order_id'])) {
+$orderId = $_GET['order_id'] ?? null;
+
+if (!$orderId) {
     echo json_encode(['ok' => false, 'error' => 'order_id required']);
     exit;
 }
 
-$orderId = trim($_GET['order_id']);
-
 try {
     $pdo = db_connect();
 
-    // 1) First check payments table
+    // -----------------------------------------
+    // 1️⃣ FIRST: Check payments table (most accurate)
+    // -----------------------------------------
     $stmt = $pdo->prepare("
         SELECT status 
         FROM payments 
@@ -28,16 +30,20 @@ try {
     $payment = $stmt->fetch(PDO::FETCH_ASSOC);
 
     if ($payment) {
+        $st = strtolower($payment['status']);
+
         echo json_encode([
-            'ok' => true,
-            'source' => 'payments',
-            'status' => strtolower($payment['status']),
+            'ok'       => true,
+            'source'   => 'payments',
+            'status'   => $st,             // pending | successful | failed
             'order_id' => $orderId
         ]);
         exit;
     }
 
-    // 2) Fall back to sessions table
+    // -----------------------------------------
+    // 2️⃣ SECOND: Fall back to sessions table
+    // -----------------------------------------
     $stmt = $pdo->prepare("
         SELECT status
         FROM sessions
@@ -49,25 +55,36 @@ try {
     $session = $stmt->fetch(PDO::FETCH_ASSOC);
 
     if ($session) {
+        $st = strtolower($session['status']); // pending | completed | failed
+
+        // normalize to same vocabulary
+        $normalized = match ($st) {
+            'completed', 'success', 'successful' => 'successful',
+            'failed', 'error'                    => 'failed',
+            default                              => 'pending'
+        };
+
         echo json_encode([
-            'ok' => true,
-            'source' => 'sessions',
-            'status' => strtolower($session['status']),
+            'ok'       => true,
+            'source'   => 'sessions',
+            'status'   => $normalized,
             'order_id' => $orderId
         ]);
         exit;
     }
 
-    // If nothing found
+    // -----------------------------------------
+    // 3️⃣ No record found
+    // -----------------------------------------
     echo json_encode([
-        'ok' => false,
-        'status' => 'unknown',
+        'ok'       => false,
+        'status'   => 'unknown',
         'order_id' => $orderId
     ]);
 
 } catch (Throwable $e) {
     echo json_encode([
-        'ok' => false,
+        'ok'    => false,
         'error' => 'DB error: ' . $e->getMessage()
     ]);
 }
