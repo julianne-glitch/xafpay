@@ -81,7 +81,7 @@ if (!defined('CONFIG_LOADED')) {
     // --------------------------------------------------------
     function tranzak_cfg(): array {
         return [
-            'base'          => rtrim(envv('TRANZAK_BASE_URL', 'https://sandbox.dsapi.tranzak.me'), '/'),
+            'base'          => rtrim(envv('TRANZAK_BASE_URL', 'https://api-sandbox.tranzak.me/api/v1'), '/'),
             'appId'         => envv('TRANZAK_APP_ID', ''),
             'apiKey'        => envv('TRANZAK_API_KEY', ''),
             'webhookId'     => envv('TRANZAK_WEBHOOK_ID', ''),
