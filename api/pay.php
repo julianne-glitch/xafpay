@@ -21,10 +21,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 // ------------------------------------------------------------
 $raw = file_get_contents("php://input");
 $input = json_decode($raw, true);
-
-if (!$input) {
-    $input = $_POST;
-}
+if (!$input) $input = $_POST;
 
 log_event("pay.php input", $input);
 
@@ -58,6 +55,7 @@ $orderId = "ORD" . time() . rand(1000, 9999);
 try {
     $pdo = db_connect();
 
+    // Insert session
     $stmt = $pdo->prepare("
         INSERT INTO sessions (amount, currency, phone_number, carrier_code, order_id, status)
         VALUES (:amount, :currency, :phone, :carrier, :order_id, 'pending')
@@ -72,6 +70,7 @@ try {
     ]);
     $sessionId = $stmt->fetchColumn();
 
+    // Insert payment
     $stmt2 = $pdo->prepare("
         INSERT INTO payments (session_id, amount, carrier, status, reference_id)
         VALUES (:sid, :amount, :carrier, 'pending', :ref)
@@ -93,27 +92,25 @@ try {
 // TRANZAK PAYMENT INIT
 // ------------------------------------------------------------
 $cfg    = tranzak_cfg();
+$base   = rtrim($cfg['base'], "/");   // https://sandbox.dsapi.tranzak.me
 $appId  = $cfg['appId'];
 $apiKey = $cfg['apiKey'];
 
-// MUST be EXACT — DSAPI base without /api/v1
-$base   = rtrim($cfg['base'], "/");
-
-// Carrier codes for DSAPI
+// Sandbox carrier mapping
 $tranzakCarrier = ($carrier === 'ORANGE') ? "orange_cm" : "mtn_cm";
 
 // Callback URL
 $returnUrl = base_url() . "/api/callback.php?order_id=" . $orderId;
 
 // ------------------------------------------------------------
-// Correct payload DSAPI
+// DSAPI Payload (CORRECT)
 // ------------------------------------------------------------
 $payload = [
     "mchTransactionRef"  => $orderId,
     "amount"             => $amount,
     "currencyCode"       => $currency,
     "mobileWalletNumber" => $phoneE164,
-    "carrierCode"        => $tranzakCarrier,
+    "carrier"            => $tranzakCarrier,  // FIXED
     "description"        => "Order $orderId",
     "returnUrl"          => $returnUrl
 ];
@@ -121,12 +118,12 @@ $payload = [
 log_event("pay.php payload_to_tranzak", $payload);
 
 // ------------------------------------------------------------
-// Correct DSAPI endpoint (NO /api/v1)
+// DSAPI Endpoint (CORRECT)
 // ------------------------------------------------------------
 $url = $base . "/payment/initiate";
 
 // ------------------------------------------------------------
-// CURL request
+// CURL
 // ------------------------------------------------------------
 $ch = curl_init($url);
 curl_setopt_array($ch, [
@@ -145,7 +142,7 @@ $curlError = curl_error($ch);
 $curlInfo  = curl_getinfo($ch);
 curl_close($ch);
 
-// Log all diagnostics
+// Log
 log_event("pay.php curl_info", json_encode($curlInfo));
 log_event("pay.php curl_error", json_encode($curlError));
 log_event("pay.php tranzak_raw_response", $response);
@@ -167,7 +164,7 @@ if (!$resp || empty($resp['success'])) {
 $requestId = $resp['data']['requestId'] ?? null;
 
 // ------------------------------------------------------------
-// Save Tranzak requestId
+// Save request ID
 // ------------------------------------------------------------
 $pdo->prepare("
     UPDATE payments
@@ -182,18 +179,18 @@ $pdo->prepare("
 ]);
 
 // ------------------------------------------------------------
-// Send response back to frontend
+// Output
 // ------------------------------------------------------------
 json_out([
-    "ok"                  => true,
-    "session_id"          => $sessionId,
-    "payment_id"          => $paymentId,
-    "order_id"            => $orderId,
-    "amount"              => $amount,
-    "currency"            => $currency,
-    "phone"               => $phone,
-    "phone_e164"          => $phoneE164,
-    "carrier"             => $carrier,
-    "tranzak_request_id"  => $requestId,
-    "tranzak_payload_raw" => $resp
+    "ok"                 => true,
+    "session_id"         => $sessionId,
+    "payment_id"         => $paymentId,
+    "order_id"           => $orderId,
+    "amount"             => $amount,
+    "currency"           => $currency,
+    "phone"              => $phone,
+    "phone_e164"         => $phoneE164,
+    "carrier"            => $carrier,
+    "tranzak_request_id" => $requestId,
+    "tranzak_payload_raw"=> $resp
 ]);
