@@ -2,29 +2,34 @@
 
 use Dotenv\Dotenv;
 
-// ---------------------------------------------
+// ------------------------------------------------------------
 // Prevent double-loading
-// ---------------------------------------------
+// ------------------------------------------------------------
 if (!defined('CONFIG_LOADED')) {
     define('CONFIG_LOADED', true);
 
-    // Composer autoload (for Guzzle + Dotenv)
+    // --------------------------------------------------------
+    // Composer autoload (Guzzle + Dotenv)
+    // --------------------------------------------------------
     if (file_exists(__DIR__ . '/vendor/autoload.php')) {
         require_once __DIR__ . '/vendor/autoload.php';
     }
 
-    // Load .env for local dev
+    // --------------------------------------------------------
+    // Load .env ONLY if present (local dev)
+    // Production uses Render environment variables
+    // --------------------------------------------------------
     if (class_exists(Dotenv::class) && file_exists(__DIR__ . '/.env')) {
         $dotenv = Dotenv::createImmutable(__DIR__);
         $dotenv->load();
     }
 
-    // ---------------------------------------------
-    // Helper functions (DEFINED ONLY ONCE)
-    // ---------------------------------------------
-
+    // --------------------------------------------------------
+    // SAFE ENV HELPER
+    // --------------------------------------------------------
     function envv(string $key, ?string $default = null): ?string {
-        return $_ENV[$key] ?? $_SERVER[$key] ?? getenv($key) ?: $default;
+        $val = $_ENV[$key] ?? $_SERVER[$key] ?? getenv($key);
+        return ($val === false || $val === null || $val === '') ? $default : $val;
     }
 
     function app_env(): string {
@@ -35,52 +40,58 @@ if (!defined('CONFIG_LOADED')) {
         return rtrim(envv('BASE_URL', ''), '/');
     }
 
-    function hmac_secret(): string {
-        return envv('HMAC_SECRET', 'change_me');
-    }
-
     function wc_base_url(): string {
         return rtrim(envv('WC_BASE_URL', ''), '/');
     }
 
-    function mtn_cfg(): array {
-
-    // 1) Read raw .env value
-    $raw = envv('MTN_BASE', 'sandbox.momodeveloper.mtn.com');
-
-    // 2) Trim whitespace + remove newlines
-    $clean = trim(str_replace(["\n", "\r"], '', $raw));
-
-    // 3) Ensure full HTTPS URL
-    if (!str_starts_with($clean, 'http')) {
-        $clean = 'https://' . $clean;
+    function hmac_secret(): string {
+        return envv('HMAC_SECRET', 'change_me');
     }
 
-    // 4) Remove trailing slash
-    $base = rtrim($clean, '/');
+    // --------------------------------------------------------
+    // MTN CONFIG (cleaned + corrected)
+    // --------------------------------------------------------
+    function mtn_cfg(): array {
 
-    return [
-        'env'        => envv('MTN_ENV', 'sandbox'),
-        'base'       => $base,
-        'subKey'     => envv('MTN_SUBSCRIPTION_KEY', ''),
-        'apiUser'    => envv('MTN_API_USER', ''),
-        'apiKey'     => envv('MTN_API_KEY', ''),
-        'currency'   => envv('MTN_CURRENCY', 'XAF'),
-        'payerMsisdn'=> preg_replace('/\D+/', '', envv('MTN_PAYER_MSISDN', '')),
-        'payerMsg'   => envv('MTN_PAYER_MESSAGE', 'Payment for order'),
-        'payeeNote'  => envv('MTN_PAYEE_NOTE', 'XafPay'),
-    ];
-}
+        // Always sanitize base domain/url
+        $raw = envv('MTN_BASE', 'sandbox.momodeveloper.mtn.com');
+        $clean = trim(str_replace(["\n", "\r"], '', $raw));
+
+        if (!str_starts_with($clean, 'http')) {
+            $clean = 'https://' . $clean;
+        }
+
+        $base = rtrim($clean, '/');
+
+        return [
+            'env'        => envv('MTN_ENV', 'sandbox'),
+            'base'       => $base,
+            'subKey'     => envv('MTN_SUBSCRIPTION_KEY', ''),
+            'apiUser'    => envv('MTN_API_USER', ''),
+            'apiKey'     => envv('MTN_API_KEY', ''),
+            'currency'   => envv('MTN_CURRENCY', 'XAF'),
+            'payerMsisdn'=> preg_replace('/\D+/', '', envv('MTN_PAYER_MSISDN', '')),
+            'payerMsg'   => envv('MTN_PAYER_MESSAGE', 'Payment for order'),
+            'payeeNote'  => envv('MTN_PAYEE_NOTE', 'XafPay'),
+        ];
+    }
+
+    // --------------------------------------------------------
+    // TRANZAK CONFIG
+    // --------------------------------------------------------
     function tranzak_cfg(): array {
         return [
             'base'          => rtrim(envv('TRANZAK_BASE_URL', 'https://sandbox.dsapi.tranzak.me'), '/'),
             'appId'         => envv('TRANZAK_APP_ID', ''),
             'apiKey'        => envv('TRANZAK_API_KEY', ''),
             'webhookId'     => envv('TRANZAK_WEBHOOK_ID', ''),
-            'webhookSecret' => envv('TRANZAK_WEBHOOK_SECRET', ''),  // can be empty in sandbox
+            'webhookSecret' => envv('TRANZAK_WEBHOOK_SECRET', ''), // optional sandbox
         ];
     }
 
+    // --------------------------------------------------------
+    // DATABASE CONFIG
+    // --------------------------------------------------------
     function db_cfg(): array {
         return [
             'host'     => envv('DB_HOST', 'localhost'),
@@ -94,21 +105,29 @@ if (!defined('CONFIG_LOADED')) {
     function db_connect(): PDO {
         $cfg = db_cfg();
         $dsn = "pgsql:host={$cfg['host']};port={$cfg['port']};dbname={$cfg['dbname']}";
+
         $pdo = new PDO($dsn, $cfg['user'], $cfg['password'], [
             PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
             PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
         ]);
+
         $pdo->exec("SET search_path TO public");
         return $pdo;
     }
 
+    // --------------------------------------------------------
+    // JSON OUTPUT (clean + safe)
+    // --------------------------------------------------------
     function json_out($data, int $code = 200): void {
         http_response_code($code);
-        header('Content-Type: application/json');
-        echo json_encode($data);
+        header('Content-Type: application/json; charset=utf-8');
+        echo json_encode($data, JSON_UNESCAPED_UNICODE);
         exit;
     }
 
+    // --------------------------------------------------------
+    // HELPERS
+    // --------------------------------------------------------
     function uuidv4(): string {
         $data = random_bytes(16);
         $data[6] = chr((ord($data[6]) & 0x0f) | 0x40);
@@ -121,11 +140,16 @@ if (!defined('CONFIG_LOADED')) {
         return hash_hmac('sha256', json_encode($payload), $secret);
     }
 
+    // --------------------------------------------------------
+    // MERCHANT AUTH HELPERS
+    // --------------------------------------------------------
     function require_merchant(PDO $pdo) {
         $headers = getallheaders();
         $apiKey = $headers['X-API-KEY'] ?? null;
 
-        if (!$apiKey) json_out(['error' => 'Missing X-API-KEY'], 401);
+        if (!$apiKey) {
+            json_out(['error' => 'Missing X-API-KEY'], 401);
+        }
 
         $stmt = $pdo->prepare("SELECT * FROM merchants WHERE api_key = :k LIMIT 1");
         $stmt->execute(['k' => $apiKey]);
@@ -142,7 +166,7 @@ if (!defined('CONFIG_LOADED')) {
         $headers = getallheaders();
         $token = $headers['Authorization'] ?? '';
 
-        if (!str_starts_with($token, "Bearer ")) {
+        if (!str_starts_with($token, 'Bearer ')) {
             json_out(['error' => 'Missing bearer token'], 401);
         }
 

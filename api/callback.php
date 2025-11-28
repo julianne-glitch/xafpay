@@ -1,11 +1,11 @@
 <?php
+
 require_once __DIR__ . '/logger.php';
 require_once __DIR__ . '/../config.php';
 
-// Log markers
 log_event("callback.php reached", [
-    'GET'     => $_GET,
-    'raw'     => $_SERVER['QUERY_STRING'] ?? ''
+    'GET' => $_GET,
+    'raw_query' => $_SERVER['QUERY_STRING'] ?? ''
 ]);
 
 // ------------------------------------------------------------
@@ -21,109 +21,41 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     exit;
 }
 
-$orderId   = $_GET['order_id'] ?? '';
-$status    = $_GET['status']   ?? '';
-$signature = $_GET['signature'] ?? '';
+// ------------------------------------------------------------
+// Extract WC parameters (Tranzak does NOT send signature/status)
+// ------------------------------------------------------------
+$orderId = $_GET['order_id'] ?? null;
 
-if (!$orderId || !$status || !$signature) {
-    json_out(['ok' => false, 'error' => 'Missing parameters'], 400);
+if (!$orderId) {
+    json_out(['ok' => false, 'error' => 'Missing order_id'], 400);
 }
 
 // ------------------------------------------------------------
-// 1️⃣ Verify signature
+// Verify that order/session exists (optional but safer)
 // ------------------------------------------------------------
-$expected = hash_hmac('sha256', $orderId . 'success', hmac_secret());
-
-if (!hash_equals($expected, $signature)) {
-    json_out(['ok' => false, 'error' => 'Invalid signature'], 403);
-}
-
 $pdo = db_connect();
 
-// ------------------------------------------------------------
-// 2️⃣ Fetch session + payment
-// ------------------------------------------------------------
-$stmt = $pdo->prepare("
-    SELECT 
-        s.id AS session_id,
-        p.reference_id,
-        p.callback_sent
-    FROM sessions s
-    LEFT JOIN payments p ON p.session_id = s.id
-    WHERE s.order_id = :oid
-    LIMIT 1
-");
+$stmt = $pdo->prepare("SELECT id FROM sessions WHERE order_id = :oid LIMIT 1");
 $stmt->execute(['oid' => $orderId]);
-$row = $stmt->fetch(PDO::FETCH_ASSOC);
+$session = $stmt->fetch();
 
-if (!$row) {
-    json_out(['ok' => false, 'error' => 'Order not found in DB'], 404);
-}
-
-$sessionId     = $row['session_id'];
-$referenceId   = $row['reference_id'];
-$callbackSent  = (bool)($row['callback_sent'] ?? false);
-
-// ------------------------------------------------------------
-// 3️⃣ Avoid duplicate callbacks (exit immediately)
-// ------------------------------------------------------------
-if ($callbackSent) {
-    log_event("callback.php duplicate_callback", $orderId);
-    // Still redirect user to order page
-    $wcBase = wc_base_url();
-    header("Location: {$wcBase}/?order_id={$orderId}&payment_status=success");
-    exit;
-}
-
-// Normalize status
-$internalStatus = strtolower($status) === 'success' ? 'SUCCESS' : 'FAILED';
-
-// ------------------------------------------------------------
-// 4️⃣ Update DB
-// ------------------------------------------------------------
-try {
-    // Update session
-    $pdo->prepare("
-        UPDATE sessions
-        SET status = :st, updated_at = NOW()
-        WHERE id = :sid
-    ")->execute([
-        'st'  => $internalStatus,
-        'sid' => $sessionId
-    ]);
-
-    // Update payment row
-    $pdo->prepare("
-        UPDATE payments
-        SET status = :st,
-            callback_sent = TRUE,
-            updated_at = NOW()
-        WHERE reference_id = :ref
-    ")->execute([
-        'st'  => $internalStatus,
-        'ref' => $referenceId
-    ]);
-
-    log_event("callback.php db_update", [
-        'order_id' => $orderId,
-        'reference_id' => $referenceId,
-        'status' => $internalStatus
-    ]);
-
-} catch (Throwable $e) {
-    log_event("callback.php DB error", $e->getMessage());
-    json_out(['ok' => false, 'error' => $e->getMessage()], 500);
+if (!$session) {
+    log_event("callback.php order_not_found", $orderId);
+    json_out(['ok' => false, 'error' => 'Order not found'], 404);
 }
 
 // ------------------------------------------------------------
-// 5️⃣ Redirect user to final WC order page
+// Do NOT check status here (Tranzak webhook handles it)
 // ------------------------------------------------------------
+// callback.php simply redirects user to WC final page
+
 $wcBase = wc_base_url();
+$returnUrl = "{$wcBase}/?order_id={$orderId}";
 
-$returnUrl = "{$wcBase}/?order_id={$orderId}&payment_status=" . strtolower($internalStatus);
-
+// Log redirect
 log_event("callback.php redirecting", $returnUrl);
 
-// WC redirect should happen AFTER JSON_OUT? No. For browser, redirect is correct
+// Redirect user to WooCommerce
 header("Location: {$returnUrl}");
 exit;
+

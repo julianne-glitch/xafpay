@@ -1,10 +1,18 @@
 <?php
-require_once __DIR__ . '/../config.php';
 
+require_once __DIR__ . '/../config.php';
+require_once __DIR__ . '/logger.php';
+
+// ------------------------------------------------------------
+// CORS / HEADERS
+// ------------------------------------------------------------
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Headers: Content-Type");
 header("Content-Type: application/json");
 
+// ------------------------------------------------------------
+// Read JSON or POST fallback
+// ------------------------------------------------------------
 $raw = file_get_contents("php://input");
 $input = json_decode($raw, true);
 
@@ -12,38 +20,46 @@ if (!$input) {
     $input = $_POST;
 }
 
-// ----------------------
-//  INPUTS
-// ----------------------
+log_event("pay.php input", $input);
+
+// ------------------------------------------------------------
+// Validate inputs
+// ------------------------------------------------------------
 $amount   = floatval($input['amount'] ?? 0);
 $phone    = $input['phone'] ?? '';
-$carrier  = strtoupper($input['carrier'] ?? 'MTN');
-$currency = $input['currency'] ?? 'XAF';
+$carrier  = strtoupper(trim($input['carrier'] ?? 'MTN'));
+$currency = strtoupper($input['currency'] ?? 'XAF');
 
 if (!$amount || !$phone) {
-    echo json_encode(["ok" => false, "error" => "Missing amount or phone"]);
-    exit;
+    json_out(["ok" => false, "error" => "Missing amount or phone"], 400);
 }
 
-// sanitize phone
 $phone = preg_replace('/\D/', '', $phone);
-$phoneE164 = (strlen($phone) == 9) ? "237$phone" : $phone;
+$phoneE164 = (strlen($phone) === 9) ? "237$phone" : $phone;
 
-// Create an internal order id
+// Normalize carrier for Tranzak
+if (!in_array($carrier, ['MTN', 'ORANGE'])) {
+    $carrier = 'MTN'; // fallback
+}
+
+// ------------------------------------------------------------
+// Generate stable merchant reference ID (order ID)
+// ------------------------------------------------------------
 $orderId = "ORD" . time() . rand(1000, 9999);
 
-// ----------------------
-//  DB INIT
-// ----------------------
+// ------------------------------------------------------------
+// Create session + payment rows
+// ------------------------------------------------------------
 try {
     $pdo = db_connect();
 
-    // create session
+    // SESSION
     $stmt = $pdo->prepare("
         INSERT INTO sessions (amount, currency, phone_number, carrier_code, order_id, status)
         VALUES (:amount, :currency, :phone, :carrier, :order_id, 'pending')
         RETURNING id
     ");
+
     $stmt->execute([
         ':amount'   => $amount,
         ':currency' => $currency,
@@ -51,44 +67,51 @@ try {
         ':carrier'  => $carrier,
         ':order_id' => $orderId,
     ]);
+
     $sessionId = $stmt->fetchColumn();
 
-    // create payment entry
+    // PAYMENT
     $stmt2 = $pdo->prepare("
         INSERT INTO payments (session_id, amount, carrier, status, reference_id)
         VALUES (:sid, :amount, :carrier, 'pending', :ref)
         RETURNING id
     ");
+
     $stmt2->execute([
-        ':sid'    => $sessionId,
-        ':amount' => $amount,
-        ':carrier'=> $carrier,
-        ':ref'    => $orderId
+        ':sid'     => $sessionId,
+        ':amount'  => $amount,
+        ':carrier' => $carrier,
+        ':ref'     => $orderId
     ]);
+
     $paymentId = $stmt2->fetchColumn();
 
 } catch (Throwable $e) {
-    echo json_encode(["ok" => false, "error" => "DB Error: ".$e->getMessage()]);
-    exit;
+    json_out(["ok" => false, "error" => "DB Error: ".$e->getMessage()], 500);
 }
 
-// ----------------------
-//  CALL TRANZAK API
-// ----------------------
+// ------------------------------------------------------------
+// INITIATE TRANZAK PAYMENT
+// ------------------------------------------------------------
 $cfg = tranzak_cfg();
 $appId = $cfg['appId'];
 $apiKey = $cfg['apiKey'];
 $base = $cfg['base'];
+
+// The URL user returns to after payment
+$returnUrl = base_url() . "/api/callback.php?order_id=" . $orderId;
 
 $payload = [
     "amount"             => $amount,
     "currencyCode"       => $currency,
     "description"        => "Order $orderId",
     "mobileWalletNumber" => $phoneE164,
-    "mchTransactionRef"  => $orderId,
+    "mchTransactionRef"  => $orderId,        // THIS IS THE STABLE ID USED BY WEBHOOK
     "carrier"            => $carrier,
-    "returnUrl"          => "https://pay.xafpay.com/checkout/return.php?order_id=$orderId"
+    "returnUrl"          => $returnUrl
 ];
+
+log_event("pay.php payload_to_tranzak", $payload);
 
 $ch = curl_init("$base/payment/initiate");
 curl_setopt_array($ch, [
@@ -105,42 +128,48 @@ curl_setopt_array($ch, [
 $response = curl_exec($ch);
 curl_close($ch);
 
-$raw = json_decode($response, true);
+$resp = json_decode($response, true);
 
-if (!$raw || empty($raw['success'])) {
-    echo json_encode(["ok" => false, "error" => "Tranzak Error", "raw" => $raw]);
-    exit;
+log_event("pay.php tranzak_response", $resp);
+
+// ------------------------------------------------------------
+// Validate Tranzak response
+// ------------------------------------------------------------
+if (!$resp || empty($resp['success'])) {
+    json_out(["ok" => false, "error" => "Tranzak Error", "raw" => $resp], 500);
 }
 
-$requestId = $raw['data']['requestId'] ?? null;
+$requestId = $resp['data']['requestId'] ?? null;
 
-// ----------------------
-//  UPDATE PAYMENT
-// ----------------------
+// Important: DO NOT replace reference_id (orderId) with requestId
+// But we store requestId for reference
+
+// ------------------------------------------------------------
+// Update payment record with Tranzak request details
+// ------------------------------------------------------------
 $pdo->prepare("
-    UPDATE payments 
-    SET reference_id = :rid, response_payload = :payload, updated_at = NOW()
+    UPDATE payments
+    SET transaction_request_id = :tid, response_payload = :payload, updated_at = NOW()
     WHERE id = :pid
 ")->execute([
-    ':rid'     => $requestId,
-    ':payload' => json_encode($raw),
+    ':tid'     => $requestId,
+    ':payload' => json_encode($resp),
     ':pid'     => $paymentId
 ]);
 
-// ----------------------
-//  FINAL RESPONSE
-// ----------------------
-echo json_encode([
-    "ok"                 => true,
-    "mode"               => "DIRECT",
-    "session_id"         => $sessionId,
-    "payment_id"         => $paymentId,
-    "order_id"           => $orderId,
-    "amount"             => $amount,
-    "currency"           => $currency,
-    "phone"              => $phone,
-    "phone_e164"         => $phoneE164,
-    "carrier"            => $carrier,
-    "tranzak_request_id" => $requestId,
-    "tranzak_raw"        => $raw
+// ------------------------------------------------------------
+// Return response to frontend
+// ------------------------------------------------------------
+json_out([
+    "ok"                  => true,
+    "session_id"          => $sessionId,
+    "payment_id"          => $paymentId,
+    "order_id"            => $orderId,
+    "amount"              => $amount,
+    "currency"            => $currency,
+    "phone"               => $phone,
+    "phone_e164"          => $phoneE164,
+    "carrier"             => $carrier,
+    "tranzak_request_id"  => $requestId,
+    "tranzak_payload_raw" => $resp
 ]);
