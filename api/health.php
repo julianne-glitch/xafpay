@@ -8,14 +8,17 @@ log_event("HEALTH_CHECK_HIT", $_SERVER['REMOTE_ADDR'] ?? 'unknown');
 // -------------------------------------------------------------
 // CORS (required for React / WooCommerce / Webhooks)
 // -------------------------------------------------------------
+
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
-header("Access-Control-Allow-Headers: Content-Type, Authorization");
+header("Access-Control-Allow-Headers: Content-Type, Authorization, X-API-KEY, X-SIGNATURE, X-TIMESTAMP");
+header("Access-Control-Allow-Credentials: true");
 
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     http_response_code(200);
     exit;
 }
+
 
 // -------------------------------------------------------------
 // HEALTH RESPONSE

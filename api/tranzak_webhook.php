@@ -2,9 +2,17 @@
 
 require_once __DIR__ . '/../config.php';
 require_once __DIR__ . '/logger.php';
+header("Access-Control-Allow-Origin: *");
+header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
+header("Access-Control-Allow-Headers: Content-Type, Authorization, X-API-KEY, X-SIGNATURE, X-TIMESTAMP");
+header("Access-Control-Allow-Credentials: true");
 
-header('Content-Type: application/json');
-header('Access-Control-Allow-Origin: *');
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+    http_response_code(200);
+    exit;
+}
+
+
 
 // RAW BODY
 $raw = file_get_contents('php://input');
