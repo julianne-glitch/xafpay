@@ -27,11 +27,11 @@ if (!$input || !is_array($input)) {
     json_out(['ok' => false, 'error' => 'Invalid JSON'], 400);
 }
 
-$amount   = (int)($input['amount'] ?? 0);
-$currency = $input['currency'] ?? 'XAF';
-$phone    = $input['phone_number'] ?? null;
-$carrier  = $input['carrier_code'] ?? null;
-$orderId  = $input['order_id'] ?? ('ORD-' . time());
+$amount     = (int)($input['amount'] ?? 0);
+$currency   = $input['currency'] ?? 'XAF';
+$phone      = $input['phone_number'] ?? null;
+$carrier    = $input['carrier_code'] ?? null;
+$orderId    = $input['order_id'] ?? ('ORD-' . time());
 $merchantId = $input['merchant_id'] ?? '185b2203-ec89-4d7d-9568-f48dd9311120';
 
 if ($amount <= 0) {
@@ -42,8 +42,17 @@ if (!$phone || !$carrier) {
 }
 
 // normalise phone to digits
-$phone = preg_replace('/\D+/', '', $phone);
+$phone   = preg_replace('/\D+/', '', $phone);
 $carrier = strtoupper($carrier);
+
+// --------------------------
+// 🔢 Build E.164 phone for Tranzak (Cameroon default 237)
+// --------------------------
+$phoneE164 = $phone;
+// If it doesn't start with "237", prefix it (and strip leading 0)
+if (strpos($phoneE164, '237') !== 0) {
+    $phoneE164 = '237' . ltrim($phoneE164, '0');
+}
 
 // --------------------------
 // 2️⃣ Create DB session
@@ -122,49 +131,92 @@ $stmtPay->execute([
 $paymentId = $stmtPay->fetchColumn();
 
 // --------------------------
-// 4️⃣ Call Tranzak and store reference
+// 4️⃣ Tranzak: DIRECT MoMo for MTN/ORANGE, redirect for others
 // --------------------------
 $returnUrl = base_url() . "/checkout/return.php?order_id=" . urlencode($orderId);
 
 try {
-    $tranzak = tranzak_create_payment(
-        $amount,
-        $currency,
-        "Order $orderId",
-        $orderId,
-        $returnUrl
-    );
+    // ✅ Direct mobile wallet charge for MoMo flows
+    if (in_array($carrier, ['MTN', 'ORANGE'], true)) {
 
-    $paymentUrl = $tranzak['paymentAuthUrl'] ?? null;
-    if (!$paymentUrl) {
-        throw new Exception("Missing paymentAuthUrl in Tranzak response");
+        $tranzak = tranzak_charge_mobile_wallet(
+            $amount,
+            $currency,
+            "Order $orderId",
+            $orderId,
+            $phoneE164
+        );
+
+        // Usually Tranzak returns data.requestId etc.
+        $requestId = $tranzak['data']['requestId'] ?? null;
+
+        // Link payment row with Tranzak requestId for reconciliation
+        $stmtUpd = $pdo->prepare("
+            UPDATE payments
+            SET reference_id = :ref
+            WHERE id = :id
+        ");
+        $stmtUpd->execute([
+            'ref' => $requestId ?: $orderId,
+            'id'  => $paymentId,
+        ]);
+
+        // --------------------------
+        // 5️⃣ Return to frontend (no redirect URL)
+        // --------------------------
+        json_out([
+            'ok'                 => true,
+            'mode'               => 'DIRECT',          // frontend can check
+            'session_id'         => $sessionId,
+            'payment_id'         => $paymentId,
+            'order_id'           => $orderId,
+            'amount'             => $amount,
+            'currency'           => $currency,
+            'phone'              => $phone,
+            'phone_e164'         => $phoneE164,
+            'carrier'            => $carrier,
+            'tranzak_request_id' => $requestId,
+            'tranzak_raw'        => $tranzak,          // you can remove in prod
+        ]);
+
+    } else {
+        // 🔁 Fallback: normal redirect flow (e.g. CARD)
+        $tranzak = tranzak_create_payment(
+            $amount,
+            $currency,
+            "Order $orderId",
+            $orderId,
+            $returnUrl
+        );
+
+        $paymentUrl = $tranzak['paymentAuthUrl'] ?? null;
+        if (!$paymentUrl) {
+            throw new Exception("Missing paymentAuthUrl in Tranzak response");
+        }
+
+        $stmtUpd = $pdo->prepare("
+            UPDATE payments
+            SET reference_id = :ref
+            WHERE id = :id
+        ");
+        $stmtUpd->execute([
+            'ref' => $orderId,
+            'id'  => $paymentId,
+        ]);
+
+        json_out([
+            'ok'          => true,
+            'mode'        => 'REDIRECT',      // frontend knows to redirect
+            'session_id'  => $sessionId,
+            'payment_id'  => $paymentId,
+            'order_id'    => $orderId,
+            'amount'      => $amount,
+            'currency'    => $currency,
+            'phone'       => $phone,
+            'carrier'     => $carrier,
+            'payment_url' => $paymentUrl,
+        ]);
     }
-
-    // link payment row with this order ref (for debugging / reconciliation)
-    $stmtUpd = $pdo->prepare("
-        UPDATE payments
-        SET reference_id = :ref
-        WHERE id = :id
-    ");
-    $stmtUpd->execute([
-        'ref' => $orderId,
-        'id'  => $paymentId,
-    ]);
-
-    // --------------------------
-    // 5️⃣ Return to frontend
-    // --------------------------
-    json_out([
-        'ok'          => true,
-        'session_id'  => $sessionId,
-        'payment_id'  => $paymentId,
-        'order_id'    => $orderId,
-        'amount'      => $amount,
-        'currency'    => $currency,
-        'phone'       => $phone,
-        'carrier'     => $carrier,
-        'payment_url' => $paymentUrl,
-    ]);
 
 } catch (Throwable $e) {
     error_log("[sessions.php] Tranzak error: " . $e->getMessage());

@@ -95,3 +95,48 @@ function tranzak_create_payment($amount, $currency, $description, $orderId, $ret
         'raw'            => $data,
     ];
 }
+//direct momo
+function tranzak_charge_mobile_wallet($amount, $currency, $description, $orderId, $phoneE164) {
+    $cfg   = tranzak_cfg();
+    $token = tranzak_get_token();
+
+    $url = rtrim($cfg['base'], '/') . '/xp021/v1/request/create-mobile-wallet-charge';
+
+    $payload = [
+        'amount'            => (int)$amount,
+        'currencyCode'      => $currency,          // "XAF"
+        'description'       => $description,
+        'mchTransactionRef' => $orderId,
+        'mobileWalletNumber'=> $phoneE164,         // e.g. "237677890871"
+        'returnUrl'         => base_url() . '/checkout/return.php?order_id=' . urlencode($orderId),
+    ];
+
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_POST           => true,
+        CURLOPT_HTTPHEADER     => [
+            'Content-Type: application/json',
+            'Authorization: ' . 'Bearer ' . $token,
+            'X-App-ID: ' . $cfg['appId'],
+        ],
+        CURLOPT_POSTFIELDS     => json_encode($payload),
+    ]);
+
+    $res  = curl_exec($ch);
+    $err  = curl_error($ch);
+    $info = curl_getinfo($ch);
+    curl_close($ch);
+
+    if ($err) {
+        throw new Exception("Tranzak direct charge error: $err");
+    }
+
+    $data = json_decode($res, true);
+    if (empty($data['success'])) {
+        throw new Exception("Direct charge failed: HTTP {$info['http_code']} → $res");
+    }
+
+    // Tranzak returns a requestId, save it if you want
+    return $data;
+}
