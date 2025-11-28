@@ -4,7 +4,7 @@ require_once __DIR__ . '/../config.php';
 require_once __DIR__ . '/logger.php';
 
 // ------------------------------------------------------------
-// CORS
+// CORS (only needed when calling from browser)
 // ------------------------------------------------------------
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
@@ -17,7 +17,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 }
 
 // ------------------------------------------------------------
-// Read JSON input
+// Read JSON input or form POST
 // ------------------------------------------------------------
 $raw = file_get_contents("php://input");
 $input = json_decode($raw, true);
@@ -26,17 +26,18 @@ if (!$input) $input = $_POST;
 log_event("pay.php input", $input);
 
 // ------------------------------------------------------------
-// Validate inputs
+// Validate
 // ------------------------------------------------------------
 $amount   = floatval($input['amount'] ?? 0);
 $phone    = $input['phone'] ?? '';
 $carrier  = strtoupper(trim($input['carrier'] ?? 'MTN'));
-$currency = strtoupper($input['currency'] ?? 'XAF');
+$currency = 'XAF'; // Tranzak collections expects XAF for Cameroon
 
 if (!$amount || !$phone) {
     json_out(["ok" => false, "error" => "Missing amount or phone"], 400);
 }
 
+// Normalize phone (E164)
 $phone = preg_replace('/\D/', '', $phone);
 $phoneE164 = (strlen($phone) === 9) ? "237$phone" : $phone;
 
@@ -50,12 +51,11 @@ if (!in_array($carrier, ['MTN', 'ORANGE'])) {
 $orderId = "ORD" . time() . rand(1000, 9999);
 
 // ------------------------------------------------------------
-// DB: create session + payment
+// DB Session creation
 // ------------------------------------------------------------
 try {
     $pdo = db_connect();
 
-    // Insert session
     $stmt = $pdo->prepare("
         INSERT INTO sessions (amount, currency, phone_number, carrier_code, order_id, status)
         VALUES (:amount, :currency, :phone, :carrier, :order_id, 'pending')
@@ -70,7 +70,6 @@ try {
     ]);
     $sessionId = $stmt->fetchColumn();
 
-    // Insert payment
     $stmt2 = $pdo->prepare("
         INSERT INTO payments (session_id, amount, carrier, status, reference_id)
         VALUES (:sid, :amount, :carrier, 'pending', :ref)
@@ -89,41 +88,36 @@ try {
 }
 
 // ------------------------------------------------------------
-// TRANZAK PAYMENT INIT
+// Tranzak CONFIG
 // ------------------------------------------------------------
 $cfg    = tranzak_cfg();
 $base   = rtrim($cfg['base'], "/");   // https://sandbox.dsapi.tranzak.me
 $appId  = $cfg['appId'];
 $apiKey = $cfg['apiKey'];
 
-// Sandbox carrier mapping
-$tranzakCarrier = ($carrier === 'ORANGE') ? "orange_cm" : "mtn_cm";
-
-// Callback URL
-$returnUrl = base_url() . "/api/callback.php?order_id=" . $orderId;
+// ------------------------------------------------------------
+// CORRECT COLLECTIONS ENDPOINT
+// ------------------------------------------------------------
+$url = $base . "/api/v1/collections/initiate";
 
 // ------------------------------------------------------------
-// DSAPI Payload (CORRECT)
+// CORRECT COLLECTIONS PAYLOAD
 // ------------------------------------------------------------
 $payload = [
-    "mchTransactionRef"  => $orderId,
-    "amount"             => $amount,
-    "currencyCode"       => $currency,
-    "mobileWalletNumber" => $phoneE164,
-    "carrier"            => $tranzakCarrier,  // FIXED
-    "description"        => "Order $orderId",
-    "returnUrl"          => $returnUrl
+    "appId"           => $appId,
+    "amount"          => $amount,
+    "currency"        => "XAF",
+    "countryCode"     => "CM",
+    "paymentChannel"  => $carrier,     // MTN or ORANGE
+    "customerNumber"  => $phoneE164,
+    "reference"       => $orderId,
+    "callbackUrl"     => base_url() . "/api/callback.php"
 ];
 
 log_event("pay.php payload_to_tranzak", $payload);
 
 // ------------------------------------------------------------
-// DSAPI Endpoint (CORRECT)
-// ------------------------------------------------------------
-$url = $base . "/payment/initiate";
-
-// ------------------------------------------------------------
-// CURL
+// SEND TO TRANZAK (cURL)
 // ------------------------------------------------------------
 $ch = curl_init($url);
 curl_setopt_array($ch, [
@@ -131,18 +125,16 @@ curl_setopt_array($ch, [
     CURLOPT_POST           => true,
     CURLOPT_HTTPHEADER     => [
         "Content-Type: application/json",
-        "x-api-key: $apiKey",
-        "x-app-id: $appId"
+        "x-api-key: $apiKey"
     ],
     CURLOPT_POSTFIELDS     => json_encode($payload)
 ]);
 
-$response = curl_exec($ch);
-$curlError = curl_error($ch);
-$curlInfo  = curl_getinfo($ch);
+$response   = curl_exec($ch);
+$curlError  = curl_error($ch);
+$curlInfo   = curl_getinfo($ch);
 curl_close($ch);
 
-// Log
 log_event("pay.php curl_info", json_encode($curlInfo));
 log_event("pay.php curl_error", json_encode($curlError));
 log_event("pay.php tranzak_raw_response", $response);
@@ -179,7 +171,7 @@ $pdo->prepare("
 ]);
 
 // ------------------------------------------------------------
-// Output
+// Final Output
 // ------------------------------------------------------------
 json_out([
     "ok"                 => true,
@@ -192,5 +184,5 @@ json_out([
     "phone_e164"         => $phoneE164,
     "carrier"            => $carrier,
     "tranzak_request_id" => $requestId,
-    "tranzak_payload_raw"=> $resp
+    "tranzak_response"   => $resp
 ]);

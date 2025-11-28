@@ -77,15 +77,16 @@ if (!defined('CONFIG_LOADED')) {
     }
 
     // --------------------------------------------------------
-    // TRANZAK CONFIG
+    // TRANZAK CONFIG  (FIXED)
     // --------------------------------------------------------
     function tranzak_cfg(): array {
         return [
-            'base'          => rtrim(envv('TRANZAK_BASE_URL', 'https://sandbox.dsapi.tranzak.me/api/v1'), '/'),
+            // ❗ FIXED: base must NOT include /api/v1 (pay.php appends it)
+            'base'          => rtrim(envv('TRANZAK_BASE_URL', 'https://sandbox.dsapi.tranzak.me'), '/'),
             'appId'         => envv('TRANZAK_APP_ID', ''),
             'apiKey'        => envv('TRANZAK_API_KEY', ''),
             'webhookId'     => envv('TRANZAK_WEBHOOK_ID', ''),
-            'webhookSecret' => envv('TRANZAK_WEBHOOK_SECRET', ''), // optional sandbox
+            'webhookSecret' => envv('TRANZAK_WEBHOOK_SECRET', ''),
         ];
     }
 
