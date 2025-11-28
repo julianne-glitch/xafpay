@@ -4,7 +4,7 @@ require_once __DIR__ . '/../config.php';
 require_once __DIR__ . '/logger.php';
 
 // ------------------------------------------------------------
-// CORS (for React/JS checkout)
+// CORS
 // ------------------------------------------------------------
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
@@ -48,7 +48,7 @@ if (!in_array($carrier, ['MTN', 'ORANGE'])) {
 }
 
 // ------------------------------------------------------------
-// Generate order ID
+// Generate Order ID
 // ------------------------------------------------------------
 $orderId = "ORD" . time() . rand(1000, 9999);
 
@@ -58,7 +58,6 @@ $orderId = "ORD" . time() . rand(1000, 9999);
 try {
     $pdo = db_connect();
 
-    // SESSION
     $stmt = $pdo->prepare("
         INSERT INTO sessions (amount, currency, phone_number, carrier_code, order_id, status)
         VALUES (:amount, :currency, :phone, :carrier, :order_id, 'pending')
@@ -73,7 +72,6 @@ try {
     ]);
     $sessionId = $stmt->fetchColumn();
 
-    // PAYMENT
     $stmt2 = $pdo->prepare("
         INSERT INTO payments (session_id, amount, carrier, status, reference_id)
         VALUES (:sid, :amount, :carrier, 'pending', :ref)
@@ -97,16 +95,18 @@ try {
 $cfg    = tranzak_cfg();
 $appId  = $cfg['appId'];
 $apiKey = $cfg['apiKey'];
-$base   = $cfg['base']; // example: https://sandbox.dsapi.tranzak.me/api/v1
 
-// Correct sandbox carrier names
+// MUST be EXACT — DSAPI base without /api/v1
+$base   = rtrim($cfg['base'], "/");
+
+// Carrier codes for DSAPI
 $tranzakCarrier = ($carrier === 'ORANGE') ? "orange_cm" : "mtn_cm";
 
 // Callback URL
 $returnUrl = base_url() . "/api/callback.php?order_id=" . $orderId;
 
 // ------------------------------------------------------------
-// Sandbox payload (ONLY this structure works)
+// Correct payload DSAPI
 // ------------------------------------------------------------
 $payload = [
     "mchTransactionRef"  => $orderId,
@@ -121,16 +121,14 @@ $payload = [
 log_event("pay.php payload_to_tranzak", $payload);
 
 // ------------------------------------------------------------
-// Correct Sandbox endpoint
+// Correct DSAPI endpoint (NO /api/v1)
 // ------------------------------------------------------------
-$url = $base . "/payment/initiate";  
-// -> final: https://sandbox.dsapi.tranzak.me/api/v1/payment/initiate
+$url = $base . "/payment/initiate";
 
 // ------------------------------------------------------------
-// cURL call
+// CURL request
 // ------------------------------------------------------------
 $ch = curl_init($url);
-
 curl_setopt_array($ch, [
     CURLOPT_RETURNTRANSFER => true,
     CURLOPT_POST           => true,
@@ -147,7 +145,7 @@ $curlError = curl_error($ch);
 $curlInfo  = curl_getinfo($ch);
 curl_close($ch);
 
-// Logging
+// Log all diagnostics
 log_event("pay.php curl_info", json_encode($curlInfo));
 log_event("pay.php curl_error", json_encode($curlError));
 log_event("pay.php tranzak_raw_response", $response);
@@ -156,7 +154,7 @@ $resp = json_decode($response, true);
 log_event("pay.php tranzak_response_json", json_encode($resp));
 
 // ------------------------------------------------------------
-// Validate Tranzak response
+// Handle Tranzak errors
 // ------------------------------------------------------------
 if (!$resp || empty($resp['success'])) {
     json_out([
@@ -169,7 +167,7 @@ if (!$resp || empty($resp['success'])) {
 $requestId = $resp['data']['requestId'] ?? null;
 
 // ------------------------------------------------------------
-// Save requestId in DB
+// Save Tranzak requestId
 // ------------------------------------------------------------
 $pdo->prepare("
     UPDATE payments
@@ -184,7 +182,7 @@ $pdo->prepare("
 ]);
 
 // ------------------------------------------------------------
-// Output to frontend
+// Send response back to frontend
 // ------------------------------------------------------------
 json_out([
     "ok"                  => true,
