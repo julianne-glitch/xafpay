@@ -114,12 +114,15 @@ $carrierMap = [
 $returnUrl = base_url() . "/api/callback.php?order_id=" . $orderId;
 
 // Correct Tranzak payload
+// Normalize carrier name to Tranzak’s required values
+$tranzakCarrier = ($carrier === 'ORANGE') ? "OM-CM" : "MTN";
+
 $payload = [
     "mchTransactionRef"  => $orderId,
     "amount"             => $amount,
     "currencyCode"       => $currency,
     "mobileWalletNumber" => $phoneE164,
-    "carrierCode"        => $carrierMap[$carrier] ?? "mtn_cm",
+    "carrier"            => $tranzakCarrier,
     "description"        => "Order $orderId",
     "returnUrl"          => $returnUrl
 ];
