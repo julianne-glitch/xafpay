@@ -2,6 +2,7 @@
 
 require_once __DIR__ . '/../config.php';
 require_once __DIR__ . '/logger.php';
+
 // ------------------------------------------------------------
 // CORS (required for React fetch)
 // ------------------------------------------------------------
@@ -14,7 +15,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     http_response_code(200);
     exit;
 }
-
 
 // ------------------------------------------------------------
 // Read JSON or POST fallback
@@ -43,9 +43,9 @@ if (!$amount || !$phone) {
 $phone = preg_replace('/\D/', '', $phone);
 $phoneE164 = (strlen($phone) === 9) ? "237$phone" : $phone;
 
-// Normalize carrier for Tranzak
+// Normalize carrier into MTN/ORANGE
 if (!in_array($carrier, ['MTN', 'ORANGE'])) {
-    $carrier = 'MTN'; // fallback
+    $carrier = 'MTN';
 }
 
 // ------------------------------------------------------------
@@ -54,7 +54,7 @@ if (!in_array($carrier, ['MTN', 'ORANGE'])) {
 $orderId = "ORD" . time() . rand(1000, 9999);
 
 // ------------------------------------------------------------
-// Create session + payment rows
+// Create session + payment rows in DB
 // ------------------------------------------------------------
 try {
     $pdo = db_connect();
@@ -104,21 +104,29 @@ $appId = $cfg['appId'];
 $apiKey = $cfg['apiKey'];
 $base = $cfg['base'];
 
-// The URL user returns to after payment
+// Correct carrier mapping (Tranzak sandbox format)
+$carrierMap = [
+    "MTN"    => "mtn_cm",
+    "ORANGE" => "orange_cm"
+];
+
+// Callback URL
 $returnUrl = base_url() . "/api/callback.php?order_id=" . $orderId;
 
+// Correct Tranzak payload
 $payload = [
+    "mchTransactionRef"  => $orderId,
     "amount"             => $amount,
     "currencyCode"       => $currency,
-    "description"        => "Order $orderId",
     "mobileWalletNumber" => $phoneE164,
-    "mchTransactionRef"  => $orderId,        // THIS IS THE STABLE ID USED BY WEBHOOK
-    "carrier"            => $carrier,
+    "carrierCode"        => $carrierMap[$carrier] ?? "mtn_cm",
+    "description"        => "Order $orderId",
     "returnUrl"          => $returnUrl
 ];
 
 log_event("pay.php payload_to_tranzak", $payload);
 
+// cURL CALL
 $ch = curl_init("$base/payment/initiate");
 curl_setopt_array($ch, [
     CURLOPT_RETURNTRANSFER => true,
@@ -133,7 +141,6 @@ curl_setopt_array($ch, [
 
 $response = curl_exec($ch);
 curl_close($ch);
-
 $resp = json_decode($response, true);
 
 log_event("pay.php tranzak_response", $resp);
@@ -147,11 +154,8 @@ if (!$resp || empty($resp['success'])) {
 
 $requestId = $resp['data']['requestId'] ?? null;
 
-// Important: DO NOT replace reference_id (orderId) with requestId
-// But we store requestId for reference
-
 // ------------------------------------------------------------
-// Update payment record with Tranzak request details
+// Store requestId into DB (but keep reference_id = orderId)
 // ------------------------------------------------------------
 $pdo->prepare("
     UPDATE payments
@@ -164,7 +168,7 @@ $pdo->prepare("
 ]);
 
 // ------------------------------------------------------------
-// Return response to frontend
+// Return final JSON to frontend
 // ------------------------------------------------------------
 json_out([
     "ok"                  => true,
