@@ -141,12 +141,18 @@ curl_setopt_array($ch, [
     ],
     CURLOPT_POSTFIELDS     => json_encode($payload)
 ]);
-
 $response = curl_exec($ch);
+$curlError = curl_error($ch);
+$curlInfo  = curl_getinfo($ch);
 curl_close($ch);
-$resp = json_decode($response, true);
 
-log_event("pay.php tranzak_response", $resp);
+// log diag info
+log_event("pay.php curl_info", json_encode($curlInfo));
+log_event("pay.php curl_error", json_encode($curlError));
+log_event("pay.php tranzak_raw_response", $response);
+
+$resp = json_decode($response, true);
+log_event("pay.php tranzak_response_json", json_encode($resp));
 
 // ------------------------------------------------------------
 // Validate Tranzak response
