@@ -68,23 +68,42 @@ $stmtPay->execute([
 $paymentId = $stmtPay->fetchColumn();
 
 // --------------------------
-// 4️⃣ Call Tranzak
+// 4️⃣ Call Tranzak and store reference
 // --------------------------
 $returnUrl = base_url() . "/checkout/return.php?order_id=" . urlencode($orderId);
 
 try {
     $tranzak = tranzak_create_payment($amount, $currency, "Order $orderId", $orderId, $returnUrl);
+    $paymentUrl = $tranzak['paymentAuthUrl'] ?? null;
+
+    if (!$paymentUrl) {
+        throw new Exception("Missing paymentAuthUrl in Tranzak response");
+    }
+
+    // link payment row with this order ref
+    $stmtUpd = $pdo->prepare("
+        UPDATE payments
+        SET reference_id = :ref
+        WHERE id = :id
+    ");
+    $stmtUpd->execute([
+        'ref' => $orderId,
+        'id'  => $paymentId,
+    ]);
+
+    // --------------------------
+    // 5️⃣ Return to frontend
+    // --------------------------
+    json_out([
+        'ok'          => true,
+        'session_id'  => $sessionId,
+        'payment_id'  => $paymentId,
+        'order_id'    => $orderId,
+        'amount'      => $amount,
+        'payment_url' => $paymentUrl,
+    ]);
+
 } catch (Throwable $e) {
+    error_log("[sessions.php] Tranzak error: " . $e->getMessage());
     json_out(['ok' => false, 'error' => 'Tranzak API error: ' . $e->getMessage()], 500);
 }
-
-// --------------------------
-// 5️⃣ Return to frontend
-// --------------------------
-json_out([
-    'ok' => true,
-    'session_id' => $sessionId,
-    'payment_id' => $paymentId,
-    'order_id' => $orderId,
-    'payment_url' => $tranzak['paymentAuthUrl'],
-]);
