@@ -4,7 +4,7 @@ require_once __DIR__ . '/../config.php';
 require_once __DIR__ . '/logger.php';
 
 // ------------------------------------------------------------
-// CORS (only needed when calling from browser)
+// CORS
 // ------------------------------------------------------------
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
@@ -17,41 +17,42 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 }
 
 // ------------------------------------------------------------
-// Read JSON input or form POST
+// Read JSON input or POST
 // ------------------------------------------------------------
-$raw = file_get_contents("php://input");
+$raw   = file_get_contents("php://input");
 $input = json_decode($raw, true);
 if (!$input) $input = $_POST;
 
 log_event("pay.php input", $input);
 
 // ------------------------------------------------------------
-// Validate
+// Validate input
 // ------------------------------------------------------------
 $amount   = floatval($input['amount'] ?? 0);
 $phone    = $input['phone'] ?? '';
-$carrier  = strtoupper(trim($input['carrier'] ?? 'MTN'));
-$currency = 'XAF'; 
+$carrier  = strtoupper(trim($input['carrier'] ?? 'MTN')); // saved for DB analytics
+$currency = "XAF";
 
 if (!$amount || !$phone) {
     json_out(["ok" => false, "error" => "Missing amount or phone"], 400);
 }
 
-// Normalize phone
-$phone = preg_replace('/\D/', '', $phone);
+// Normalize phone to E164
+$phone = preg_replace("/\D/", "", $phone);
 $phoneE164 = (strlen($phone) === 9) ? "237$phone" : $phone;
 
-if (!in_array($carrier, ['MTN', 'ORANGE'])) {
-    $carrier = 'MTN';
+// Fallback carrier
+if (!in_array($carrier, ["MTN","ORANGE"])) {
+    $carrier = "MTN";
 }
 
 // ------------------------------------------------------------
-// Generate Order ID
+// Generate unique order reference
 // ------------------------------------------------------------
 $orderId = "ORD" . time() . rand(1000, 9999);
 
 // ------------------------------------------------------------
-// DB Session creation
+// Create DB session + payment
 // ------------------------------------------------------------
 try {
     $pdo = db_connect();
@@ -88,36 +89,36 @@ try {
 }
 
 // ------------------------------------------------------------
-// Tranzak CONFIG
+// Tranzak Config (XP021 API)
 // ------------------------------------------------------------
 $cfg    = tranzak_cfg();
-$base   = rtrim($cfg['base'], "/");   
-$appId  = $cfg['appId'];
+$base   = rtrim($cfg['base'], "/");   // should be https://sandbox.dsapi.tranzak.me
 $apiKey = $cfg['apiKey'];
 
 // ------------------------------------------------------------
-// CORRECT DSAPI COLLECTIONS ENDPOINT
+// XP021 ENDPOINT — *THIS IS THE CORRECT ONE*
 // ------------------------------------------------------------
-$url = $base . "/api/v1/collections/initiate";
+$url = $base . "/xp021/v1/request/create-mobile-wallet-charge";
 
 // ------------------------------------------------------------
-// CORRECT DSAPI PAYLOAD
+// XP021 Payload — EXACTLY matches documentation
 // ------------------------------------------------------------
 $payload = [
-    "appId"           => $appId,
-    "amount"          => $amount,
-    "currency"        => "XAF",
-    "countryCode"     => "CM",
-    "paymentChannel"  => $carrier,
-    "customerNumber"  => $phoneE164,
-    "reference"       => $orderId,
-    "callbackUrl"     => base_url() . "/api/callback.php"
+    "amount"             => $amount,
+    "currencyCode"       => "XAF",
+    "description"        => "XafShop order $orderId",
+    "mchTransactionRef"  => $orderId,        // REQUIRED + must be unique
+    "mobileWalletNumber" => $phoneE164,      // REQUIRED
+    "returnUrl"          => base_url() . "/payment/return.php?order_id=$orderId",
+    // Optional:
+    //"callbackUrl"      => base_url() . "/api/callback.php"
 ];
 
-log_event("pay.php payload_to_tranzak", $payload);
+log_event("pay.php xp021_payload", $payload);
+log_event("pay.php xp021_url", $url);
 
 // ------------------------------------------------------------
-// SEND TO TRANZAK
+// Send request to Tranzak XP021
 // ------------------------------------------------------------
 $ch = curl_init($url);
 curl_setopt_array($ch, [
@@ -143,9 +144,9 @@ $resp = json_decode($response, true);
 log_event("pay.php tranzak_response_json", json_encode($resp));
 
 // ------------------------------------------------------------
-// Handle Tranzak errors
+// Handle Tranzak response
 // ------------------------------------------------------------
-if (!$resp || empty($resp['success'])) {
+if (!$resp || empty($resp["success"])) {
     json_out([
         "ok"    => false,
         "error" => "Tranzak Error",
@@ -153,10 +154,11 @@ if (!$resp || empty($resp['success'])) {
     ], 500);
 }
 
-$requestId = $resp['data']['requestId'] ?? null;
+$requestId = $resp["data"]["requestId"] ?? null;
+$authUrl   = $resp["data"]["links"]["paymentAuthUrl"] ?? null;
 
 // ------------------------------------------------------------
-// Save request ID
+// Save request ID into DB
 // ------------------------------------------------------------
 $pdo->prepare("
     UPDATE payments
@@ -184,5 +186,7 @@ json_out([
     "phone_e164"         => $phoneE164,
     "carrier"            => $carrier,
     "tranzak_request_id" => $requestId,
+    "payment_auth_url"   => $authUrl,
     "tranzak_response"   => $resp
 ]);
+
