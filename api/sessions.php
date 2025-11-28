@@ -43,13 +43,13 @@ $pdo = db_connect();
 
 $stmt = $pdo->prepare("
     INSERT INTO sessions (merchant_id, order_id, total_amount, status, created_at, updated_at)
-    VALUES (:merchant_id, :order_id, :total_amount, 'pending', NOW(), NOW())
+    VALUES (:merchant_id, :order_id, :amount, 'pending', NOW(), NOW())
     RETURNING id
 ");
 $stmt->execute([
     'merchant_id' => $merchantId,
     'order_id' => $orderId,
-    'total_amount' => $amount
+    'amount' => $amount
 ]);
 $sessionId = $stmt->fetchColumn();
 
