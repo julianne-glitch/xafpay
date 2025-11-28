@@ -1,200 +1,146 @@
 <?php
-ini_set('display_errors', 1);
-ini_set('display_startup_errors', 1);
-error_reporting(E_ALL);
-
-require_once __DIR__ . '/logger.php';
 require_once __DIR__ . '/../config.php';
-require_once __DIR__ . '/_auth.php';   // <-- FIXED (must come before using optional_hmac_auth)
-use GuzzleHttp\Client;
 
-log_event("PAY_START", file_get_contents("php://input"));
-
-// --------------------------------------------------
-// CORS
-// --------------------------------------------------
 header("Access-Control-Allow-Origin: *");
-header("Access-Control-Allow-Methods: POST, OPTIONS");
-header("Access-Control-Allow-Headers: Content-Type, Authorization, X-API-KEY, X-SIGNATURE, X-TIMESTAMP");
+header("Access-Control-Allow-Headers: Content-Type");
+header("Content-Type: application/json");
 
-if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-    http_response_code(200);
-    exit;
-}
-
-// --------------------------------------------------
-// SAFE INPUT READER
-// --------------------------------------------------
 $raw = file_get_contents("php://input");
 $input = json_decode($raw, true);
-if (!$input || !is_array($input)) {
+
+if (!$input) {
     $input = $_POST;
 }
 
-$orderId = $input['order_id'] ?? ($_GET['order_id'] ?? '');
-if (!$orderId) {
-    json_out(['error' => 'order_id required'], 400);
+// ----------------------
+//  INPUTS
+// ----------------------
+$amount   = floatval($input['amount'] ?? 0);
+$phone    = $input['phone'] ?? '';
+$carrier  = strtoupper($input['carrier'] ?? 'MTN');
+$currency = $input['currency'] ?? 'XAF';
+
+if (!$amount || !$phone) {
+    echo json_encode(["ok" => false, "error" => "Missing amount or phone"]);
+    exit;
 }
 
-// --------------------------------------------------
-// DB + AUTH
-// --------------------------------------------------
-$pdo = db_connect();
-$auth = optional_hmac_auth($pdo);
-$merchant = $auth['merchant'] ?? null;
+// sanitize phone
+$phone = preg_replace('/\D/', '', $phone);
+$phoneE164 = (strlen($phone) == 9) ? "237$phone" : $phone;
 
-// Merchant ID comes directly from SESSION (best practice)
-$merchantId = null;
+// Create an internal order id
+$orderId = "ORD" . time() . rand(1000, 9999);
 
-// --------------------------------------------------
-// FETCH SESSION
-// --------------------------------------------------
-$stmt = $pdo->prepare("SELECT * FROM sessions WHERE order_id = :order LIMIT 1");
-$stmt->execute(['order' => $orderId]);
-$session = $stmt->fetch(PDO::FETCH_ASSOC);
-
-if (!$session) {
-    json_out(['error' => 'Session not found'], 404);
-}
-
-$sessionId   = $session['id'];
-$merchantId  = $session['merchant_id'];   // <-- FIXED: Payment must belong to same merchant
-$amount      = $session['amount'];
-$phone       = $session['phone_number'];
-$carrier     = $session['carrier_code'];
-
-if ($carrier !== 'MTN') {
-    json_out(['error' => 'Only MTN supported currently'], 400);
-}
-
-// --------------------------------------------------
-// IDEMPOTENCY CHECK
-// --------------------------------------------------
-$stmt = $pdo->prepare("SELECT * FROM payments WHERE session_id = ?");
-$stmt->execute([$sessionId]);
-$existing = $stmt->fetch(PDO::FETCH_ASSOC);
-
-if ($existing) {
-    log_event("PAY_IDEMPOTENT_RETURN", $existing);
-
-    json_out([
-        'ok'           => true,
-        'idempotent'   => true,
-        'provider'     => 'MTN',
-        'reference_id' => $existing['reference_id'],
-        'order_id'     => $orderId,
-        'amount'       => $amount,
-        'currency'     => $existing['currency'],
-        'status_url'   => base_url()."/api/status.php?ref=".$existing['reference_id']
-    ]);
-}
-
-// --------------------------------------------------
-// MTN TOKEN
-// --------------------------------------------------
-$cfg = mtn_cfg();
-
+// ----------------------
+//  DB INIT
+// ----------------------
 try {
-    $client = new Client(['base_uri' => $cfg['base'], 'timeout' => 20]);
+    $pdo = db_connect();
 
-    $resp = $client->post('/collection/token/', [
-        'headers' => [
-            'Ocp-Apim-Subscription-Key' => $cfg['subKey'],
-            'Authorization'             => 'Basic ' . base64_encode($cfg['apiUser'] . ':' . $cfg['apiKey']),
-        ],
+    // create session
+    $stmt = $pdo->prepare("
+        INSERT INTO sessions (amount, currency, phone_number, carrier_code, order_id, status)
+        VALUES (:amount, :currency, :phone, :carrier, :order_id, 'pending')
+        RETURNING id
+    ");
+    $stmt->execute([
+        ':amount'   => $amount,
+        ':currency' => $currency,
+        ':phone'    => $phone,
+        ':carrier'  => $carrier,
+        ':order_id' => $orderId,
     ]);
+    $sessionId = $stmt->fetchColumn();
 
-    $json = json_decode($resp->getBody(), true);
-    $token = $json['access_token'] ?? null;
+    // create payment entry
+    $stmt2 = $pdo->prepare("
+        INSERT INTO payments (session_id, amount, carrier, status, reference_id)
+        VALUES (:sid, :amount, :carrier, 'pending', :ref)
+        RETURNING id
+    ");
+    $stmt2->execute([
+        ':sid'    => $sessionId,
+        ':amount' => $amount,
+        ':carrier'=> $carrier,
+        ':ref'    => $orderId
+    ]);
+    $paymentId = $stmt2->fetchColumn();
 
-    if (!$token) throw new Exception("Token missing");
 } catch (Throwable $e) {
-    json_out(['error' => 'MTN token error', 'detail' => $e->getMessage()], 500);
+    echo json_encode(["ok" => false, "error" => "DB Error: ".$e->getMessage()]);
+    exit;
 }
 
-// --------------------------------------------------
-// MTN REQUEST TO PAY
-// --------------------------------------------------
-$referenceId = uuidv4();
+// ----------------------
+//  CALL TRANZAK API
+// ----------------------
+$cfg = tranzak_cfg();
+$appId = $cfg['appId'];
+$apiKey = $cfg['apiKey'];
+$base = $cfg['base'];
 
-$body = [
-    'amount'       => (string)$amount,
-    'currency'     => 'XAF',
-    'externalId'   => $orderId,
-    'payer'        => [
-        'partyIdType' => 'MSISDN',
-        'partyId'     => $phone
-    ],
-    'payerMessage' => "XafPay Checkout",
-    'payeeNote'    => "Order $orderId"
+$payload = [
+    "amount"             => $amount,
+    "currencyCode"       => $currency,
+    "description"        => "Order $orderId",
+    "mobileWalletNumber" => $phoneE164,
+    "mchTransactionRef"  => $orderId,
+    "carrier"            => $carrier,
+    "returnUrl"          => "https://pay.xafpay.com/checkout/return.php?order_id=$orderId"
 ];
 
-try {
-    $client->post('/collection/v1_0/requesttopay', [
-        'headers' => [
-            'Authorization'             => "Bearer {$token}",
-            'X-Reference-Id'            => $referenceId,
-            'X-Target-Environment'      => $cfg['env'],
-            'Ocp-Apim-Subscription-Key' => $cfg['subKey'],
-            'Content-Type'              => 'application/json',
-        ],
-        'json' => $body,
-    ]);
-} catch (Throwable $e) {
-    json_out(['error' => 'MTN requestToPay error', 'detail' => $e->getMessage()], 500);
-}
-
-// --------------------------------------------------
-// INSERT PAYMENT
-// --------------------------------------------------
-$stmt = $pdo->prepare("
-    INSERT INTO payments (
-        session_id,
-        merchant_id,
-        order_id,
-        phone_number,
-        carrier,
-        amount,
-        currency,
-        reference_id,
-        status,
-        callback_sent,
-        created_at,
-        updated_at
-    ) VALUES (
-        :session,
-        :merchant,
-        :order_id,
-        :phone,
-        'MTN',
-        :amount,
-        'XAF',
-        :ref,
-        'PENDING',
-        FALSE,
-        NOW(),
-        NOW()
-    )
-");
-
-$stmt->execute([
-    ':session'  => $sessionId,
-    ':merchant' => $merchantId,
-    ':order_id' => $orderId,
-    ':phone'    => $phone,
-    ':amount'   => $amount,
-    ':ref'      => $referenceId
+$ch = curl_init("$base/payment/initiate");
+curl_setopt_array($ch, [
+    CURLOPT_RETURNTRANSFER => true,
+    CURLOPT_POST           => true,
+    CURLOPT_HTTPHEADER     => [
+        "Content-Type: application/json",
+        "x-api-key: $apiKey",
+        "x-app-id: $appId"
+    ],
+    CURLOPT_POSTFIELDS     => json_encode($payload)
 ]);
 
-// --------------------------------------------------
-// FINAL RESPONSE
-// --------------------------------------------------
-json_out([
-    'ok'           => true,
-    'provider'     => 'MTN',
-    'reference_id' => $referenceId,
-    'order_id'     => $orderId,
-    'amount'       => $amount,
-    'currency'     => 'XAF',
-    'status_url'   => base_url() . "/api/status.php?ref={$referenceId}"
+$response = curl_exec($ch);
+curl_close($ch);
+
+$raw = json_decode($response, true);
+
+if (!$raw || empty($raw['success'])) {
+    echo json_encode(["ok" => false, "error" => "Tranzak Error", "raw" => $raw]);
+    exit;
+}
+
+$requestId = $raw['data']['requestId'] ?? null;
+
+// ----------------------
+//  UPDATE PAYMENT
+// ----------------------
+$pdo->prepare("
+    UPDATE payments 
+    SET reference_id = :rid, response_payload = :payload, updated_at = NOW()
+    WHERE id = :pid
+")->execute([
+    ':rid'     => $requestId,
+    ':payload' => json_encode($raw),
+    ':pid'     => $paymentId
+]);
+
+// ----------------------
+//  FINAL RESPONSE
+// ----------------------
+echo json_encode([
+    "ok"                 => true,
+    "mode"               => "DIRECT",
+    "session_id"         => $sessionId,
+    "payment_id"         => $paymentId,
+    "order_id"           => $orderId,
+    "amount"             => $amount,
+    "currency"           => $currency,
+    "phone"              => $phone,
+    "phone_e164"         => $phoneE164,
+    "carrier"            => $carrier,
+    "tranzak_request_id" => $requestId,
+    "tranzak_raw"        => $raw
 ]);
