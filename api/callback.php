@@ -9,12 +9,11 @@ log_event("callback.php reached", [
 ]);
 
 // ------------------------------------------------------------
-// CORS
+// CORS (optional, but harmless)
 // ------------------------------------------------------------
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: GET, OPTIONS");
 header("Access-Control-Allow-Headers: Content-Type, Authorization");
-header("Content-Type: application/json");
 
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     http_response_code(200);
@@ -22,40 +21,51 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 }
 
 // ------------------------------------------------------------
-// Extract WC parameters (Tranzak does NOT send signature/status)
+// Extract the order_id sent by Tranzak
 // ------------------------------------------------------------
 $orderId = $_GET['order_id'] ?? null;
 
 if (!$orderId) {
-    json_out(['ok' => false, 'error' => 'Missing order_id'], 400);
+    log_event("callback.php missing_order_id", $_GET);
+    echo "Missing order_id";
+    exit;
 }
 
 // ------------------------------------------------------------
-// Verify that order/session exists (optional but safer)
+// Confirm the session exists
 // ------------------------------------------------------------
-$pdo = db_connect();
-
-$stmt = $pdo->prepare("SELECT id FROM sessions WHERE order_id = :oid LIMIT 1");
-$stmt->execute(['oid' => $orderId]);
-$session = $stmt->fetch();
+try {
+    $pdo = db_connect();
+    $stmt = $pdo->prepare("
+        SELECT id FROM sessions WHERE order_id = :oid LIMIT 1
+    ");
+    $stmt->execute(['oid' => $orderId]);
+    $session = $stmt->fetch();
+} catch (Throwable $e) {
+    log_event("callback.php db_error", $e->getMessage());
+    echo "Database error";
+    exit;
+}
 
 if (!$session) {
     log_event("callback.php order_not_found", $orderId);
-    json_out(['ok' => false, 'error' => 'Order not found'], 404);
+    echo "Order not found";
+    exit;
 }
 
 // ------------------------------------------------------------
-// Do NOT check status here (Tranzak webhook handles it)
+// DO NOT update the order status here.
+// The webhook (tranzak_webhook.php) handles it.
 // ------------------------------------------------------------
-// callback.php simply redirects user to WC final page
 
-$wcBase = wc_base_url();
+// ------------------------------------------------------------
+// Redirect back to WooCommerce
+// ------------------------------------------------------------
+$wcBase = wc_base_url();                 // from .env → WC_BASE_URL
 $returnUrl = "{$wcBase}/?order_id={$orderId}";
 
-// Log redirect
-log_event("callback.php redirecting", $returnUrl);
+log_event("callback.php redirecting_to", $returnUrl);
 
-// Redirect user to WooCommerce
-header("Location: {$returnUrl}");
+// Tranzak requires an HTML redirect
+header("Location: $returnUrl");
 exit;
-

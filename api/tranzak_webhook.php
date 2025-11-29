@@ -3,6 +3,9 @@
 require_once __DIR__ . '/../config.php';
 require_once __DIR__ . '/logger.php';
 
+// ------------------------------------------------------------
+// CORS
+// ------------------------------------------------------------
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
 header("Access-Control-Allow-Headers: Content-Type, Authorization, X-API-KEY, X-SIGNATURE, X-TIMESTAMP");
@@ -14,16 +17,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 }
 
 // ------------------------------------------------------------
-// RAW BODY
+// RAW INPUT
 // ------------------------------------------------------------
 $raw = file_get_contents('php://input');
 $data = json_decode($raw, true);
 
-// Log everything
-$logFile = __DIR__ . '/../tranzak_webhook.log';
+// LOG (Render-safe)
+$logFile = '/tmp/tranzak_webhook.log';
 file_put_contents($logFile, date('c') . " RAW: " . $raw . PHP_EOL, FILE_APPEND);
 
-// Payload can be { "data": {...} } or plain {...}
+// Payload can be {data:{}} or {}
 $payload = $data['data'] ?? $data ?? null;
 
 if (!$payload) {
@@ -33,7 +36,7 @@ if (!$payload) {
 }
 
 // ------------------------------------------------------------
-// Extract required fields with fallbacks
+// Extract fields
 // ------------------------------------------------------------
 $txId = $payload['transactionId']
     ?? $payload['txId']
@@ -58,7 +61,9 @@ if (!$txId || !$orderRef || !$statusRaw) {
     exit;
 }
 
+// ------------------------------------------------------------
 // Normalize status
+// ------------------------------------------------------------
 $status = match ($statusRaw) {
     'completed', 'success', 'successful' => 'successful',
     'failed', 'error'                    => 'failed',
@@ -74,19 +79,19 @@ file_put_contents(
 );
 
 // ------------------------------------------------------------
-// DB
+// DB CONNECT
 // ------------------------------------------------------------
 try {
     $pdo = db_connect();
 } catch (Throwable $e) {
     file_put_contents($logFile, date('c') . " DB ERROR: " . $e->getMessage() . PHP_EOL, FILE_APPEND);
     http_response_code(500);
-    echo json_encode(['ok' => false, 'error' => 'DB error']);
+    echo json_encode(['ok' => false, 'error' => 'DB connection error']);
     exit;
 }
 
 // ------------------------------------------------------------
-// Log webhook event always
+// Log webhook event (always)
 // ------------------------------------------------------------
 try {
     $stmt = $pdo->prepare("
@@ -98,28 +103,26 @@ try {
         ':payload' => json_encode($payload),
     ]);
 } catch (Throwable $e) {
-    // continue even if fails
+    // continue
 }
 
 // ------------------------------------------------------------
-// Idempotency check
+// Check if already final (idempotent)
 // ------------------------------------------------------------
 $stmt = $pdo->prepare("
-    SELECT status 
-    FROM payments 
-    WHERE reference_id = :ref 
-    LIMIT 1
+    SELECT status FROM payments WHERE reference_id = :ref LIMIT 1
 ");
 $stmt->execute([':ref' => $orderRef]);
 $current = $stmt->fetch();
 
 if ($current && in_array($current['status'], ['successful', 'failed', 'canceled', 'expired'])) {
+    http_response_code(200);
     echo json_encode(['ok' => true, 'idempotent' => true]);
     exit;
 }
 
 // ------------------------------------------------------------
-// Update Payments
+// Update payments
 // ------------------------------------------------------------
 try {
     $stmt = $pdo->prepare("
@@ -141,7 +144,7 @@ try {
 }
 
 // ------------------------------------------------------------
-// Update Sessions
+// Update session
 // ------------------------------------------------------------
 try {
     $stmt = $pdo->prepare("
@@ -155,8 +158,9 @@ try {
 }
 
 // ------------------------------------------------------------
-// Final response
+// SUCCESS RESPONSE (mandatory)
 // ------------------------------------------------------------
+http_response_code(200);
 echo json_encode(['ok' => true, 'status' => $status]);
 exit;
 
