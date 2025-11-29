@@ -5,13 +5,6 @@ require_once __DIR__ . '/../config.php';
 /**
  * Get Tranzak configuration
  */
-function tranzak_cfg(): array {
-    return [
-        "base"   => "https://sandbox.dsapi.tranzak.me",
-        "appId"  => getenv("TRANZAK_APP_ID"),
-        "apiKey" => getenv("TRANZAK_API_KEY")
-    ];
-}
 
 /**
  * STEP 1 — Get Bearer Token from correct endpoint
