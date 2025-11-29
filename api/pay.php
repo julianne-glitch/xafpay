@@ -2,9 +2,10 @@
 
 require_once __DIR__ . '/../config.php';
 require_once __DIR__ . '/logger.php';
+require_once __DIR__ . '/tranzak_helpers.php';   // ⭐ REQUIRED
 
 // ------------------------------------------------------------
-// CORS (required for React / Netlify / external sites)
+// CORS
 // ------------------------------------------------------------
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
@@ -37,7 +38,7 @@ if (!$amount || !$phone) {
     json_out(["ok" => false, "error" => "Missing amount or phone"], 400);
 }
 
-// normalize phone
+// Normalize phone
 $phone = preg_replace('/\D/', '', $phone);
 $phoneE164 = (strlen($phone) === 9) ? "237$phone" : $phone;
 
@@ -46,16 +47,17 @@ if (!in_array($carrier, ["MTN", "ORANGE"])) {
 }
 
 // ------------------------------------------------------------
-// Generate unique order reference
+// Create internal order ID
 // ------------------------------------------------------------
 $orderId = "ORD" . time() . rand(1000, 9999);
 
 // ------------------------------------------------------------
-// Create DB session + payment
+// Create session + payment DB records
 // ------------------------------------------------------------
 try {
     $pdo = db_connect();
 
+    // SESSION
     $stmt = $pdo->prepare("
         INSERT INTO sessions (amount, currency, phone_number, carrier_code, order_id, status)
         VALUES (:amount, :currency, :phone, :carrier, :order_id, 'pending')
@@ -70,6 +72,7 @@ try {
     ]);
     $sessionId = $stmt->fetchColumn();
 
+    // PAYMENT
     $stmt2 = $pdo->prepare("
         INSERT INTO payments (session_id, amount, carrier, status, reference_id)
         VALUES (:sid, :amount, :carrier, 'pending', :ref)
@@ -84,20 +87,12 @@ try {
     $paymentId = $stmt2->fetchColumn();
 
 } catch (Throwable $e) {
-    json_out(["ok" => false, "error" => "DB Error: ".$e->getMessage()], 500);
+    json_out(["ok" => false, "error" => "DB Error: " . $e->getMessage()], 500);
 }
 
 // ------------------------------------------------------------
-// INITIATE TRANZAK PAYMENT (Correct endpoint)
+// CALL TRANZAK v2 PAYMENT
 // ------------------------------------------------------------
-$cfg = tranzak_cfg();
-$appId = $cfg['appId'];
-$apiKey = $cfg['apiKey'];
-$base = $cfg['base'];   // should be: https://sandbox.dsapi.tranzak.me
-
-// Required by Tranzak
-$endpoint = "$base/xp021/v1/payment/initiate";
-
 $returnUrl = base_url() . "/api/callback.php?order_id=" . $orderId;
 
 $payload = [
@@ -110,41 +105,32 @@ $payload = [
     "returnUrl"          => $returnUrl
 ];
 
-log_event("pay.php payload_to_tranzak", $payload);
-
-$ch = curl_init($endpoint);
-curl_setopt_array($ch, [
-    CURLOPT_RETURNTRANSFER => true,
-    CURLOPT_POST           => true,
-    CURLOPT_HTTPHEADER     => [
-    "Content-Type: application/json",
-    "x-api-key: $apiKey",
-    "x-app-id: $appId",
-    "Authorization: Bearer $apiKey"
-],
-    CURLOPT_POSTFIELDS     => json_encode($payload)
-]);
-
-$response = curl_exec($ch);
-curl_close($ch);
-
-$resp = json_decode($response, true);
+// ⭐ THE NEW CORRECT WAY
+$resp = tranzak_initiate_payment($payload);
 
 log_event("pay.php tranzak_response", $resp);
 
 // ------------------------------------------------------------
-// Handle Tranzak response
+// Handle invalid response
 // ------------------------------------------------------------
 if (!$resp || empty($resp['success'])) {
-    json_out(["ok" => false, "error" => "Tranzak Error", "raw" => $resp], 500);
+    json_out([
+        "ok"    => false,
+        "error" => "Tranzak Error",
+        "raw"   => $resp
+    ], 500);
 }
 
 $requestId = $resp['data']['requestId'] ?? null;
 
-// Save request ID in DB
+// ------------------------------------------------------------
+// Save requestId in DB
+// ------------------------------------------------------------
 $pdo->prepare("
     UPDATE payments
-    SET transaction_request_id = :tid, response_payload = :payload, updated_at = NOW()
+    SET transaction_request_id = :tid,
+        response_payload = :payload,
+        updated_at = NOW()
     WHERE id = :pid
 ")->execute([
     ':tid'     => $requestId,
@@ -153,7 +139,7 @@ $pdo->prepare("
 ]);
 
 // ------------------------------------------------------------
-// Return result to frontend
+// Return API response
 // ------------------------------------------------------------
 json_out([
     "ok"                 => true,

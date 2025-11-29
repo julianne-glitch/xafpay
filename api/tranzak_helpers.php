@@ -1,142 +1,107 @@
 <?php
+
 require_once __DIR__ . '/../config.php';
+require_once __DIR__ . '/logger.php';
 
 /**
- * Get Tranzak auth token
+ * --------------------------------------------------------------
+ *  TRANZAK V2 AUTH + PAYMENT HELPERS
+ * --------------------------------------------------------------
+ *  - Fetch OAuth access token
+ *  - Initiate payment with correct Authorization header
+ *  - Auto-handle token failures
+ * --------------------------------------------------------------
  */
-function tranzak_get_token() {
-    $cfg = tranzak_cfg();
-    $url = rtrim($cfg['base'], '/') . '/auth/token';
 
-    $body = json_encode([
-        'appId'  => $cfg['appId'],
-        'appKey' => $cfg['apiKey'],
-    ]);
+
+/**
+ * Fetch OAuth Access Token from Tranzak
+ */
+function tranzak_get_token()
+{
+    $cfg  = tranzak_cfg();
+    $base = rtrim($cfg['base'], '/');
+    $url  = "$base/xp021/v1/auth/token";
+
+    $payload = [
+        "clientId"     => $cfg['appId'],
+        "clientSecret" => $cfg['apiKey']
+    ];
+
+    log_event("tranzak_token_request", $payload);
 
     $ch = curl_init($url);
     curl_setopt_array($ch, [
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_POST           => true,
-        CURLOPT_HTTPHEADER     => ['Content-Type: application/json'],
-        CURLOPT_POSTFIELDS     => $body,
+        CURLOPT_HTTPHEADER     => ["Content-Type: application/json"],
+        CURLOPT_POSTFIELDS     => json_encode($payload)
     ]);
 
-    $res  = curl_exec($ch);
-    $err  = curl_error($ch);
-    $info = curl_getinfo($ch);
+    $resp  = curl_exec($ch);
+    $error = curl_error($ch);
     curl_close($ch);
 
-    if ($err) {
-        throw new Exception("Tranzak token error: $err");
+    log_event("tranzak_token_raw", $resp);
+
+    if ($error) {
+        log_event("tranzak_token_error", $error);
+        return null;
     }
 
-    $data  = json_decode($res, true);
-    $token = $data['data']['token'] ?? null;
+    $json = json_decode($resp, true);
 
+    if (!$json || empty($json["success"]) || empty($json["data"]["accessToken"])) {
+        log_event("tranzak_token_failure", $json);
+        return null;
+    }
+
+    return $json["data"]["accessToken"];
+}
+
+
+/**
+ * Initiate Payment (correct Tranzak v2 endpoint)
+ */
+function tranzak_initiate_payment(array $payload)
+{
+    $cfg  = tranzak_cfg();
+    $base = rtrim($cfg['base'], '/');
+
+    $token = tranzak_get_token();    // 🔥 Fetch OAuth token
     if (!$token) {
-        throw new Exception("Invalid token response: HTTP {$info['http_code']} → $res");
+        return [
+            "success"   => false,
+            "errorCode" => 401,
+            "errorMsg"  => "Unable to obtain Tranzak access token"
+        ];
     }
 
-    return $token;
-}
+    $url = "$base/xp021/v1/payment/initiate";
 
-/**
- * Create Tranzak payment request (redirect flow)
- */
-function tranzak_create_payment($amount, $currency, $description, $orderId, $returnUrl) {
-    $cfg   = tranzak_cfg();
-    $token = tranzak_get_token();
-
-    $url = rtrim($cfg['base'], '/') . '/xp021/v1/request/create';
-
-    $payload = [
-        'amount'            => (int)$amount,
-        'currencyCode'      => $currency,          // "XAF"
-        'description'       => $description,
-        'mchTransactionRef' => $orderId,           // must be unique
-        'returnUrl'         => $returnUrl,
-    ];
+    log_event("tranzak_payment_request", $payload);
 
     $ch = curl_init($url);
     curl_setopt_array($ch, [
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_POST           => true,
         CURLOPT_HTTPHEADER     => [
-            'Content-Type: application/json',
-            'Authorization: Bearer ' . $token,
-            'X-App-ID: ' . $cfg['appId'],
+            "Content-Type: application/json",
+            "Authorization: Bearer $token"   // 🔥 Correct header
         ],
-        CURLOPT_POSTFIELDS     => json_encode($payload),
+        CURLOPT_POSTFIELDS => json_encode($payload)
     ]);
 
-    $res  = curl_exec($ch);
-    $err  = curl_error($ch);
-    $info = curl_getinfo($ch);
+    $resp = curl_exec($ch);
+    $error = curl_error($ch);
     curl_close($ch);
 
-    if ($err) {
-        throw new Exception("Tranzak create payment error: $err");
+    if ($error) {
+        log_event("tranzak_payment_error", $error);
+        return ["success" => false, "errorMsg" => $error];
     }
 
-    $data = json_decode($res, true);
+    log_event("tranzak_payment_raw", $resp);
 
-    if (empty($data['success'])) {
-        throw new Exception("Payment creation failed: HTTP {$info['http_code']} → $res");
-    }
-
-    $authUrl = $data['data']['links']['paymentAuthUrl'] ?? null;
-
-    if (!$authUrl) {
-        throw new Exception("No paymentAuthUrl in response: $res");
-    }
-
-    return [
-        'paymentAuthUrl' => $authUrl,
-        'raw'            => $data,
-    ];
-}
-//direct momo
-function tranzak_charge_mobile_wallet($amount, $currency, $description, $orderId, $phoneE164) {
-    $cfg   = tranzak_cfg();
-    $token = tranzak_get_token();
-
-    $url = rtrim($cfg['base'], '/') . '/xp021/v1/request/create-mobile-wallet-charge';
-
-    $payload = [
-        'amount'            => (int)$amount,
-        'currencyCode'      => $currency,          // "XAF"
-        'description'       => $description,
-        'mchTransactionRef' => $orderId,
-        'mobileWalletNumber'=> $phoneE164,         // e.g. "237677890871"
-        'returnUrl'         => base_url() . '/checkout/return.php?order_id=' . urlencode($orderId),
-    ];
-
-    $ch = curl_init($url);
-    curl_setopt_array($ch, [
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_POST           => true,
-        CURLOPT_HTTPHEADER     => [
-            'Content-Type: application/json',
-            'Authorization: ' . 'Bearer ' . $token,
-            'X-App-ID: ' . $cfg['appId'],
-        ],
-        CURLOPT_POSTFIELDS     => json_encode($payload),
-    ]);
-
-    $res  = curl_exec($ch);
-    $err  = curl_error($ch);
-    $info = curl_getinfo($ch);
-    curl_close($ch);
-
-    if ($err) {
-        throw new Exception("Tranzak direct charge error: $err");
-    }
-
-    $data = json_decode($res, true);
-    if (empty($data['success'])) {
-        throw new Exception("Direct charge failed: HTTP {$info['http_code']} → $res");
-    }
-
-    // Tranzak returns a requestId, save it if you want
-    return $data;
+    return json_decode($resp, true);
 }
