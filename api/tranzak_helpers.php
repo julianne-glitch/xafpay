@@ -3,7 +3,7 @@
 require_once __DIR__ . '/../config.php';
 
 /**
- * STEP 1: Get Bearer Token (correct endpoint)
+ * STEP 1: Get Bearer Token
  */
 function tranzak_get_token(): ?string
 {
@@ -39,11 +39,14 @@ function tranzak_get_token(): ?string
 }
 
 /**
- * STEP 2: Use Bearer Token to initiate mobile wallet charge
+ * STEP 2: Use Bearer Token + App Keys to submit mobile wallet charge
  */
 function tranzak_initiate_payment(array $payload)
 {
     $cfg = tranzak_cfg();
+    $appId = $cfg['appId'];
+    $appKey = $cfg['apiKey'];
+
     $token = tranzak_get_token();
 
     if (!$token) {
@@ -54,7 +57,7 @@ function tranzak_initiate_payment(array $payload)
         ];
     }
 
-    // New v2 Mobile Wallet Charge endpoint
+    // Correct endpoint for MTN/Orange direct charges
     $url = "https://sandbox.dsapi.tranzak.me/xp021/v1/request/create-mobile-wallet-charge";
 
     $ch = curl_init($url);
@@ -64,7 +67,8 @@ function tranzak_initiate_payment(array $payload)
         CURLOPT_HTTPHEADER => [
             "Content-Type: application/json",
             "Authorization: Bearer $token",
-            "x-app-id: " . $cfg['appId']
+            "x-app-id: $appId",
+            "x-app-key: $appKey"
         ],
         CURLOPT_POSTFIELDS => json_encode($payload)
     ]);
