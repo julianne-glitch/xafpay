@@ -13,8 +13,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     exit;
 }
 
-
+// ------------------------------------------------------------
 // RAW BODY
+// ------------------------------------------------------------
 $raw = file_get_contents('php://input');
 $data = json_decode($raw, true);
 
@@ -22,10 +23,7 @@ $data = json_decode($raw, true);
 $logFile = __DIR__ . '/../tranzak_webhook.log';
 file_put_contents($logFile, date('c') . " RAW: " . $raw . PHP_EOL, FILE_APPEND);
 
-
-// ------------------------------------------------------------
-// 1️⃣ Handle both formats: {data:{...}} or {...}
-// ------------------------------------------------------------
+// Payload can be { "data": {...} } or plain {...}
 $payload = $data['data'] ?? $data ?? null;
 
 if (!$payload) {
@@ -34,21 +32,31 @@ if (!$payload) {
     exit;
 }
 
+// ------------------------------------------------------------
+// Extract required fields with fallbacks
+// ------------------------------------------------------------
+$txId = $payload['transactionId']
+    ?? $payload['txId']
+    ?? null;
 
-// ------------------------------------------------------------
-// 2️⃣ Extract required fields
-// ------------------------------------------------------------
-$txId      = $payload['transactionId']     ?? null;
-$orderRef  = $payload['mchTransactionRef'] ?? null;
-$statusRaw = strtolower($payload['transactionStatus'] ?? $payload['status'] ?? '');
-$amount    = $payload['amount']            ?? null;
+$orderRef = $payload['mchTransactionRef']
+    ?? $payload['merchantTransactionRef']
+    ?? null;
+
+$statusRaw = strtolower(trim(
+    $payload['transactionStatus']
+    ?? $payload['paymentStatus']
+    ?? $payload['status']
+    ?? ''
+));
+
+$amount = $payload['amount'] ?? null;
 
 if (!$txId || !$orderRef || !$statusRaw) {
     http_response_code(400);
     echo json_encode(['ok' => false, 'error' => 'Missing fields']);
     exit;
 }
-
 
 // Normalize status
 $status = match ($statusRaw) {
@@ -61,13 +69,12 @@ $status = match ($statusRaw) {
 
 file_put_contents(
     $logFile,
-    date('c') . " REF:{$orderRef} TX:{$txId} STATUS:$status" . PHP_EOL,
+    date('c') . " REF:$orderRef TX:$txId STATUS:$status" . PHP_EOL,
     FILE_APPEND
 );
 
-
 // ------------------------------------------------------------
-// 3️⃣ DB CONNECT
+// DB
 // ------------------------------------------------------------
 try {
     $pdo = db_connect();
@@ -78,9 +85,8 @@ try {
     exit;
 }
 
-
 // ------------------------------------------------------------
-// 4️⃣ Log webhook always
+// Log webhook event always
 // ------------------------------------------------------------
 try {
     $stmt = $pdo->prepare("
@@ -92,26 +98,28 @@ try {
         ':payload' => json_encode($payload),
     ]);
 } catch (Throwable $e) {
-    // Do not stop processing
+    // continue even if fails
 }
 
-
 // ------------------------------------------------------------
-// 5️⃣ Check if already final (idempotency)
+// Idempotency check
 // ------------------------------------------------------------
-$stmt = $pdo->prepare("SELECT status FROM payments WHERE reference_id = :ref LIMIT 1");
+$stmt = $pdo->prepare("
+    SELECT status 
+    FROM payments 
+    WHERE reference_id = :ref 
+    LIMIT 1
+");
 $stmt->execute([':ref' => $orderRef]);
 $current = $stmt->fetch();
 
 if ($current && in_array($current['status'], ['successful', 'failed', 'canceled', 'expired'])) {
-    http_response_code(200);
     echo json_encode(['ok' => true, 'idempotent' => true]);
     exit;
 }
 
-
 // ------------------------------------------------------------
-// 6️⃣ Update payments
+// Update Payments
 // ------------------------------------------------------------
 try {
     $stmt = $pdo->prepare("
@@ -122,7 +130,6 @@ try {
             updated_at = NOW()
         WHERE reference_id = :ref
     ");
-
     $stmt->execute([
         ':st'      => $status,
         ':payload' => json_encode($payload),
@@ -133,15 +140,13 @@ try {
     file_put_contents($logFile, date('c') . " PAYMENT UPDATE ERROR: " . $e->getMessage() . PHP_EOL, FILE_APPEND);
 }
 
-
 // ------------------------------------------------------------
-// 7️⃣ Update session
+// Update Sessions
 // ------------------------------------------------------------
 try {
     $stmt = $pdo->prepare("
         UPDATE sessions
-        SET status = :st,
-            updated_at = NOW()
+        SET status = :st, updated_at = NOW()
         WHERE order_id = :ref
     ");
     $stmt->execute([':st' => $status, ':ref' => $orderRef]);
@@ -149,11 +154,9 @@ try {
     // continue
 }
 
-
 // ------------------------------------------------------------
-// 8️⃣ Final Response
+// Final response
 // ------------------------------------------------------------
-http_response_code(200);
 echo json_encode(['ok' => true, 'status' => $status]);
 exit;
 

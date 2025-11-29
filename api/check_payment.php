@@ -25,7 +25,7 @@ try {
     $pdo = db_connect();
 
     // ---------------------------------------------------------
-    // 1️⃣ FIRST: PAYMENTS TABLE (most accurate source of truth)
+    // 1️⃣ TRY PAYMENTS TABLE FIRST (source of truth)
     // ---------------------------------------------------------
     $stmt = $pdo->prepare("
         SELECT status
@@ -38,19 +38,27 @@ try {
     $payment = $stmt->fetch(PDO::FETCH_ASSOC);
 
     if ($payment) {
-        $st = strtolower($payment['status']);  // pending | successful | failed | etc.
+
+        $rawStatus = strtolower(trim($payment['status'] ?? 'pending'));
+
+        // Normalize all possible statuses to our gateway vocabulary
+        $normalized = match ($rawStatus) {
+            'success', 'successful', 'completed'          => 'successful',
+            'failed', 'error', 'declined', 'canceled'     => 'failed',
+            default                                       => 'pending',
+        };
 
         echo json_encode([
             'ok'       => true,
             'source'   => 'payments',
-            'status'   => $st,
+            'status'   => $normalized,
             'order_id' => $orderId
         ]);
         exit;
     }
 
     // ---------------------------------------------------------
-    // 2️⃣ SECOND: SESSIONS TABLE (fallback result)
+    // 2️⃣ FALLBACK → SESSIONS TABLE
     // ---------------------------------------------------------
     $stmt = $pdo->prepare("
         SELECT status
@@ -63,13 +71,14 @@ try {
     $session = $stmt->fetch(PDO::FETCH_ASSOC);
 
     if ($session) {
-        $sessionStatus = strtolower($session['status']);
 
-        // Normalize session vocabulary to payment vocabulary
-        $normalized = match ($sessionStatus) {
-            'completed', 'success', 'successful' => 'successful',
-            'failed', 'error'                    => 'failed',
-            default                              => 'pending'
+        $rawStatus = strtolower(trim($session['status'] ?? 'pending'));
+
+        // Normalize session vocab to payment vocab
+        $normalized = match ($rawStatus) {
+            'completed', 'success', 'successful'          => 'successful',
+            'failed', 'error'                             => 'failed',
+            default                                       => 'pending'
         };
 
         echo json_encode([
@@ -82,16 +91,16 @@ try {
     }
 
     // ---------------------------------------------------------
-    // 3️⃣ If neither table has the order
+    // 3️⃣ ORDER DOES NOT EXIST ANYWHERE
     // ---------------------------------------------------------
     echo json_encode([
         'ok'       => false,
         'status'   => 'unknown',
         'order_id' => $orderId
     ]);
+    exit;
 
 } catch (Throwable $e) {
-
     echo json_encode([
         'ok'    => false,
         'error' => 'DB error: ' . $e->getMessage()
