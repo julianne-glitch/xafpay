@@ -4,24 +4,24 @@ require_once __DIR__ . '/../config.php';
 require_once __DIR__ . '/logger.php';
 
 // ------------------------------------------------------------
-// CORS
+// CORS (required for React / Netlify / external sites)
 // ------------------------------------------------------------
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
 header("Access-Control-Allow-Headers: Content-Type, Authorization, X-API-KEY, X-SIGNATURE, X-TIMESTAMP");
-header("Access-Control-Allow-Credentials: true");
 
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     http_response_code(200);
     exit;
 }
 
+header("Content-Type: application/json");
+
 // ------------------------------------------------------------
-// Read JSON input
+// Read JSON body
 // ------------------------------------------------------------
 $raw = file_get_contents("php://input");
-$input = json_decode($raw, true);
-if (!$input) $input = $_POST;
+$input = json_decode($raw, true) ?: $_POST;
 
 log_event("pay.php input", $input);
 
@@ -37,8 +37,8 @@ if (!$amount || !$phone) {
     json_out(["ok" => false, "error" => "Missing amount or phone"], 400);
 }
 
-// Normalize phone
-$phone = preg_replace("/\D/", "", $phone);
+// normalize phone
+$phone = preg_replace('/\D/', '', $phone);
 $phoneE164 = (strlen($phone) === 9) ? "237$phone" : $phone;
 
 if (!in_array($carrier, ["MTN", "ORANGE"])) {
@@ -84,84 +84,67 @@ try {
     $paymentId = $stmt2->fetchColumn();
 
 } catch (Throwable $e) {
-    json_out(["ok" => false, "error" => "DB Error: " . $e->getMessage()], 500);
+    json_out(["ok" => false, "error" => "DB Error: ".$e->getMessage()], 500);
 }
 
 // ------------------------------------------------------------
-// TRANZAK (LEGACY API)
+// INITIATE TRANZAK PAYMENT (Correct endpoint)
 // ------------------------------------------------------------
-$cfg    = tranzak_cfg();
-$base   = rtrim($cfg['base'], "/"); // https://sandbox.dsapi.tranzak.me
-$appId  = $cfg['appId'];
+$cfg = tranzak_cfg();
+$appId = $cfg['appId'];
 $apiKey = $cfg['apiKey'];
+$base = $cfg['base'];   // should be: https://sandbox.dsapi.tranzak.me
 
-// Correct endpoint
-$url = $base . "/api/v1/collections/initiate";
+// Required by Tranzak
+$endpoint = "$base/xp021/v1/payment/initiate";
 
-// ------------------------------------------------------------
-// Build Tranzak legacy payload
-// ------------------------------------------------------------
+$returnUrl = base_url() . "/api/callback.php?order_id=" . $orderId;
+
 $payload = [
-    "appId"          => $appId,
-    "amount"         => $amount,
-    "currency"       => "XAF",
-    "countryCode"    => "CM",
-    "paymentChannel" => $carrier,
-    "customerNumber" => $phoneE164,
-    "reference"      => $orderId,
-    "callbackUrl"    => base_url() . "/api/callback.php"
+    "amount"             => $amount,
+    "currencyCode"       => $currency,
+    "description"        => "Order $orderId",
+    "mobileWalletNumber" => $phoneE164,
+    "mchTransactionRef"  => $orderId,
+    "carrier"            => $carrier,
+    "returnUrl"          => $returnUrl
 ];
 
-log_event("tranzak_url", $url);
-log_event("tranzak_payload", $payload);
+log_event("pay.php payload_to_tranzak", $payload);
 
-// ------------------------------------------------------------
-// Send request to Tranzak
-// ------------------------------------------------------------
-$ch = curl_init($url);
+$ch = curl_init($endpoint);
 curl_setopt_array($ch, [
     CURLOPT_RETURNTRANSFER => true,
     CURLOPT_POST           => true,
     CURLOPT_HTTPHEADER     => [
-        "Content-Type: application/json",
-        "x-api-key: $apiKey"
-    ],
+    "Content-Type: application/json",
+    "x-api-key: $apiKey",
+    "x-app-id: $appId",
+    "Authorization: Bearer $apiKey"
+],
     CURLOPT_POSTFIELDS     => json_encode($payload)
 ]);
 
-$response  = curl_exec($ch);
-$curlError = curl_error($ch);
-$curlInfo  = curl_getinfo($ch);
+$response = curl_exec($ch);
 curl_close($ch);
 
-log_event("curl_info", json_encode($curlInfo));
-log_event("curl_error", json_encode($curlError));
-log_event("tranzak_raw", $response);
-
 $resp = json_decode($response, true);
-log_event("tranzak_json", json_encode($resp));
+
+log_event("pay.php tranzak_response", $resp);
 
 // ------------------------------------------------------------
 // Handle Tranzak response
 // ------------------------------------------------------------
-if (!$resp || empty($resp["success"])) {
-    json_out([
-        "ok"    => false,
-        "error" => "Tranzak Error",
-        "raw"   => $resp
-    ], 500);
+if (!$resp || empty($resp['success'])) {
+    json_out(["ok" => false, "error" => "Tranzak Error", "raw" => $resp], 500);
 }
 
-$requestId = $resp["data"]["requestId"] ?? null;
+$requestId = $resp['data']['requestId'] ?? null;
 
-// ------------------------------------------------------------
-// Save Tranzak request ID
-// ------------------------------------------------------------
+// Save request ID in DB
 $pdo->prepare("
     UPDATE payments
-    SET transaction_request_id = :tid,
-        response_payload = :payload,
-        updated_at = NOW()
+    SET transaction_request_id = :tid, response_payload = :payload, updated_at = NOW()
     WHERE id = :pid
 ")->execute([
     ':tid'     => $requestId,
@@ -170,7 +153,7 @@ $pdo->prepare("
 ]);
 
 // ------------------------------------------------------------
-// Return clean JSON to frontend
+// Return result to frontend
 // ------------------------------------------------------------
 json_out([
     "ok"                 => true,
@@ -185,4 +168,3 @@ json_out([
     "tranzak_request_id" => $requestId,
     "tranzak_response"   => $resp
 ]);
-
