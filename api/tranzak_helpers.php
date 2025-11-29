@@ -3,27 +3,37 @@
 require_once __DIR__ . '/../config.php';
 
 /**
- * STEP 1: Get Bearer Token
+ * Get Tranzak configuration
+ */
+function tranzak_cfg(): array {
+    return [
+        "base"   => "https://sandbox.dsapi.tranzak.me",
+        "appId"  => getenv("TRANZAK_APP_ID"),
+        "apiKey" => getenv("TRANZAK_API_KEY")
+    ];
+}
+
+/**
+ * STEP 1 — Get Bearer Token from correct endpoint
  */
 function tranzak_get_token(): ?string
 {
-    $cfg = tranzak_cfg();
-    $appId = $cfg['appId'];
-    $appKey = $cfg['apiKey'];
-
-    $url = "https://sandbox.dsapi.tranzak.me/auth/token";
+    $cfg   = tranzak_cfg();
+    $url   = $cfg["base"] . "/auth/token";
 
     $payload = [
-        "appId"  => $appId,
-        "appKey" => $appKey
+        "appId"  => $cfg["appId"],
+        "appKey" => $cfg["apiKey"]
     ];
 
     $ch = curl_init($url);
     curl_setopt_array($ch, [
         CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_POST => true,
-        CURLOPT_HTTPHEADER => ["Content-Type: application/json"],
-        CURLOPT_POSTFIELDS => json_encode($payload)
+        CURLOPT_POST           => true,
+        CURLOPT_HTTPHEADER     => [
+            "Content-Type: application/json"
+        ],
+        CURLOPT_POSTFIELDS     => json_encode($payload)
     ]);
 
     $resp = curl_exec($ch);
@@ -39,14 +49,11 @@ function tranzak_get_token(): ?string
 }
 
 /**
- * STEP 2: Use Bearer Token + App Keys to submit mobile wallet charge
+ * STEP 2 — Create Mobile Wallet Charge
  */
 function tranzak_initiate_payment(array $payload)
 {
-    $cfg = tranzak_cfg();
-    $appId = $cfg['appId'];
-    $appKey = $cfg['apiKey'];
-
+    $cfg   = tranzak_cfg();
     $token = tranzak_get_token();
 
     if (!$token) {
@@ -57,20 +64,18 @@ function tranzak_initiate_payment(array $payload)
         ];
     }
 
-    // Correct endpoint for MTN/Orange direct charges
-    $url = "https://sandbox.dsapi.tranzak.me/xp021/v1/request/create-mobile-wallet-charge";
+    $url = $cfg["base"] . "/xp021/v1/request/create-mobile-wallet-charge";
 
     $ch = curl_init($url);
     curl_setopt_array($ch, [
         CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_POST => true,
-        CURLOPT_HTTPHEADER => [
+        CURLOPT_POST           => true,
+        CURLOPT_HTTPHEADER     => [
             "Content-Type: application/json",
             "Authorization: Bearer $token",
-            "x-app-id: $appId",
-            "x-app-key: $appKey"
+            "x-app-id: {$cfg['appId']}"
         ],
-        CURLOPT_POSTFIELDS => json_encode($payload)
+        CURLOPT_POSTFIELDS     => json_encode($payload)
     ]);
 
     $resp = curl_exec($ch);

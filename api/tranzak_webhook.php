@@ -50,6 +50,7 @@ $statusRaw = strtolower(trim(
     $payload['transactionStatus']
     ?? $payload['paymentStatus']
     ?? $payload['status']
+    ?? $payload['transaction_status']   // ⭐ added for XP021 compatibility
     ?? ''
 ));
 
