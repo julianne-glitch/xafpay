@@ -17,7 +17,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 }
 
 // ------------------------------------------------------------
-// Read JSON input or POST
+// Read input
 // ------------------------------------------------------------
 $raw = file_get_contents("php://input");
 $input = json_decode($raw, true);
@@ -30,18 +30,19 @@ log_event("pay.php input", $input);
 // ------------------------------------------------------------
 $amount   = floatval($input['amount'] ?? 0);
 $phone    = $input['phone'] ?? '';
-$carrier  = strtoupper(trim($input['carrier'] ?? 'MTN')); 
+$carrier  = strtoupper(trim($input['carrier'] ?? 'MTN'));
 $currency = "XAF";
 
 if (!$amount || !$phone) {
     json_out(["ok" => false, "error" => "Missing amount or phone"], 400);
 }
 
-// Normalize phone
+// Normalize phone → E164
 $phone = preg_replace("/\D/", "", $phone);
 $phoneE164 = (strlen($phone) === 9) ? "237$phone" : $phone;
 
-if (!in_array($carrier, ["MTN","ORANGE"])) {
+// fallback allowed channels
+if (!in_array($carrier, ["MTN", "ORANGE"])) {
     $carrier = "MTN";
 }
 
@@ -51,7 +52,7 @@ if (!in_array($carrier, ["MTN","ORANGE"])) {
 $orderId = "ORD" . time() . rand(1000, 9999);
 
 // ------------------------------------------------------------
-// Create DB session + payment
+// Save session + payment into DB
 // ------------------------------------------------------------
 try {
     $pdo = db_connect();
@@ -88,40 +89,36 @@ try {
 }
 
 // ------------------------------------------------------------
-// LEGACY TRANZAK API CONFIG
+// TRanzak XP021 API CONFIG
 // ------------------------------------------------------------
 $cfg    = tranzak_cfg();
-$base   = rtrim($cfg['base'], "/");     // https://sandbox.tranzak.me  or dsapi
+$base   = rtrim($cfg['base'], "/");   // https://sandbox.dsapi.tranzak.me
 $appId  = $cfg['appId'];
 $apiKey = $cfg['apiKey'];
 
 // ------------------------------------------------------------
-// LEGACY ENDPOINT
+// XP021 ENDPOINT (correct)
 // ------------------------------------------------------------
-// LEGACY ENDPOINT (CORRECT)
-// ------------------------------------------------------------
-$url = $base . "/api/v1/collections/initiate";
-
+$url = $base . "/xp021/v1/request/create-mobile-wallet-charge";
 
 // ------------------------------------------------------------
-// LEGACY PAYLOAD
+// XP021 PAYLOAD
 // ------------------------------------------------------------
 $payload = [
-    "appId"          => $appId,
-    "amount"         => $amount,
-    "currency"       => "XAF",
-    "countryCode"    => "CM",
-    "paymentChannel" => $carrier,
-    "customerNumber" => $phoneE164,
-    "reference"      => $orderId,
-    "callbackUrl"    => base_url() . "/api/callback.php"
+    "amount"             => $amount,
+    "currencyCode"       => "XAF",
+    "description"        => "XafShop order $orderId",
+    "mchTransactionRef"  => $orderId,
+    "mobileWalletNumber" => $phoneE164,
+    "returnUrl"          => base_url() . "/payment/return.php?order_id=$orderId",
+    "callbackUrl"        => base_url() . "/api/callback.php"
 ];
 
-log_event("pay.php legacy_payload", $payload);
-log_event("pay.php legacy_url", $url);
+log_event("pay.php xp021_url", $url);
+log_event("pay.php xp021_payload", $payload);
 
 // ------------------------------------------------------------
-// Send request to Tranzak (LEGACY)
+// CURL request to Tranzak
 // ------------------------------------------------------------
 $ch = curl_init($url);
 curl_setopt_array($ch, [
@@ -131,7 +128,7 @@ curl_setopt_array($ch, [
         "Content-Type: application/json",
         "x-api-key: $apiKey"
     ],
-    CURLOPT_POSTFIELDS     => json_encode($payload)
+    CURLOPT_POSTFIELDS     => json_encode($payload),
 ]);
 
 $response  = curl_exec($ch);
@@ -147,7 +144,7 @@ $resp = json_decode($response, true);
 log_event("pay.php tranzak_response_json", json_encode($resp));
 
 // ------------------------------------------------------------
-// Handle Tranzak response
+// Response validation
 // ------------------------------------------------------------
 if (!$resp || empty($resp["success"])) {
     json_out([
@@ -158,9 +155,10 @@ if (!$resp || empty($resp["success"])) {
 }
 
 $requestId = $resp["data"]["requestId"] ?? null;
+$authUrl   = $resp["data"]["links"]["paymentAuthUrl"] ?? null;
 
 // ------------------------------------------------------------
-// Save request ID
+// Save response to DB
 // ------------------------------------------------------------
 $pdo->prepare("
     UPDATE payments
@@ -188,6 +186,7 @@ json_out([
     "phone_e164"         => $phoneE164,
     "carrier"            => $carrier,
     "tranzak_request_id" => $requestId,
+    "payment_auth_url"   => $authUrl,
     "tranzak_response"   => $resp
 ]);
 

@@ -75,7 +75,7 @@ if (!defined('CONFIG_LOADED')) {
     function tranzak_cfg(): array {
         return [
             // ✔ Correct Tranzak Sandbox Base URL
-            'base'          => rtrim(envv('TRANZAK_BASE_URL', 'https://sandbox.tranzak.me'), '/'),
+            'base'          => rtrim(envv('TRANZAK_BASE_URL', 'https://sandbox.dsapi.tranzak.me'), '/'),
 
             'appId'         => envv('TRANZAK_APP_ID', ''),
             'apiKey'        => envv('TRANZAK_API_KEY', ''),
