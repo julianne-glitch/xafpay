@@ -2,6 +2,7 @@
 
 require_once __DIR__ . '/../config.php';
 require_once __DIR__ . '/logger.php';
+
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
 header("Access-Control-Allow-Headers: Content-Type, Authorization, X-API-KEY, X-SIGNATURE, X-TIMESTAMP");
@@ -13,40 +14,41 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 }
 
 
-
 // RAW BODY
 $raw = file_get_contents('php://input');
 $data = json_decode($raw, true);
 
-// Log incoming webhook
+// Log everything
 $logFile = __DIR__ . '/../tranzak_webhook.log';
-file_put_contents($logFile, date('c') . " | RAW: " . $raw . PHP_EOL, FILE_APPEND);
+file_put_contents($logFile, date('c') . " RAW: " . $raw . PHP_EOL, FILE_APPEND);
+
 
 // ------------------------------------------------------------
-// 1️⃣ Validate JSON payload
+// 1️⃣ Handle both formats: {data:{...}} or {...}
 // ------------------------------------------------------------
-if (!$data || empty($data['data'])) {
+$payload = $data['data'] ?? $data ?? null;
+
+if (!$payload) {
     http_response_code(400);
     echo json_encode(['ok' => false, 'error' => 'Invalid payload']);
     exit;
 }
 
-$payload = $data['data'];
 
 // ------------------------------------------------------------
 // 2️⃣ Extract required fields
 // ------------------------------------------------------------
-$txId      = $payload['transactionId']        ?? null;
-$orderRef  = $payload['mchTransactionRef']    ?? null;
+$txId      = $payload['transactionId']     ?? null;
+$orderRef  = $payload['mchTransactionRef'] ?? null;
 $statusRaw = strtolower($payload['transactionStatus'] ?? $payload['status'] ?? '');
-$amount    = $payload['amount']               ?? null;
+$amount    = $payload['amount']            ?? null;
 
-// Required
 if (!$txId || !$orderRef || !$statusRaw) {
     http_response_code(400);
-    echo json_encode(['ok' => false, 'error' => 'Missing required fields']);
+    echo json_encode(['ok' => false, 'error' => 'Missing fields']);
     exit;
 }
+
 
 // Normalize status
 $status = match ($statusRaw) {
@@ -57,27 +59,28 @@ $status = match ($statusRaw) {
     default                              => 'pending',
 };
 
-// Log status
 file_put_contents(
     $logFile,
-    date('c') . " | STATUS: $status | REF: $orderRef | TX: $txId" . PHP_EOL,
+    date('c') . " REF:{$orderRef} TX:{$txId} STATUS:$status" . PHP_EOL,
     FILE_APPEND
 );
 
+
 // ------------------------------------------------------------
-// 3️⃣ DB CONNECTION
+// 3️⃣ DB CONNECT
 // ------------------------------------------------------------
 try {
     $pdo = db_connect();
 } catch (Throwable $e) {
-    file_put_contents($logFile, date('c') . " | DB CONNECT ERROR: " . $e->getMessage() . PHP_EOL, FILE_APPEND);
+    file_put_contents($logFile, date('c') . " DB ERROR: " . $e->getMessage() . PHP_EOL, FILE_APPEND);
     http_response_code(500);
-    echo json_encode(['ok' => false, 'error' => 'DB connection error']);
+    echo json_encode(['ok' => false, 'error' => 'DB error']);
     exit;
 }
 
+
 // ------------------------------------------------------------
-// 4️⃣ Insert webhook into webhooks table (ALWAYS)
+// 4️⃣ Log webhook always
 // ------------------------------------------------------------
 try {
     $stmt = $pdo->prepare("
@@ -86,29 +89,29 @@ try {
     ");
     $stmt->execute([
         ':ref'     => $orderRef,
-        ':payload' => json_encode($data)
+        ':payload' => json_encode($payload),
     ]);
 } catch (Throwable $e) {
-    // still continue — webhook LOGGING should never block updates
-    file_put_contents($logFile, date('c') . " | WEBHOOK LOG ERROR: " . $e->getMessage() . PHP_EOL, FILE_APPEND);
+    // Do not stop processing
 }
 
+
 // ------------------------------------------------------------
-// 5️⃣ Idempotency — check if payment is already final
+// 5️⃣ Check if already final (idempotency)
 // ------------------------------------------------------------
 $stmt = $pdo->prepare("SELECT status FROM payments WHERE reference_id = :ref LIMIT 1");
 $stmt->execute([':ref' => $orderRef]);
 $current = $stmt->fetch();
 
 if ($current && in_array($current['status'], ['successful', 'failed', 'canceled', 'expired'])) {
-    // Already processed
     http_response_code(200);
     echo json_encode(['ok' => true, 'idempotent' => true]);
     exit;
 }
 
+
 // ------------------------------------------------------------
-// 6️⃣ Update payments table
+// 6️⃣ Update payments
 // ------------------------------------------------------------
 try {
     $stmt = $pdo->prepare("
@@ -119,21 +122,20 @@ try {
             updated_at = NOW()
         WHERE reference_id = :ref
     ");
+
     $stmt->execute([
         ':st'      => $status,
-        ':payload' => json_encode($data),
+        ':payload' => json_encode($payload),
         ':txid'    => $txId,
-        ':ref'     => $orderRef
+        ':ref'     => $orderRef,
     ]);
 } catch (Throwable $e) {
-    file_put_contents($logFile, date('c') . " | PAYMENT UPDATE ERROR: " . $e->getMessage() . PHP_EOL, FILE_APPEND);
-    http_response_code(500);
-    echo json_encode(['ok' => false, 'error' => 'Payment update failed']);
-    exit;
+    file_put_contents($logFile, date('c') . " PAYMENT UPDATE ERROR: " . $e->getMessage() . PHP_EOL, FILE_APPEND);
 }
 
+
 // ------------------------------------------------------------
-// 7️⃣ Update session table (use order_id)
+// 7️⃣ Update session
 // ------------------------------------------------------------
 try {
     $stmt = $pdo->prepare("
@@ -142,17 +144,16 @@ try {
             updated_at = NOW()
         WHERE order_id = :ref
     ");
-    $stmt->execute([
-        ':st'  => $status,
-        ':ref' => $orderRef
-    ]);
+    $stmt->execute([':st' => $status, ':ref' => $orderRef]);
 } catch (Throwable $e) {
-    file_put_contents($logFile, date('c') . " | SESSION UPDATE ERROR: " . $e->getMessage() . PHP_EOL, FILE_APPEND);
+    // continue
 }
 
+
 // ------------------------------------------------------------
-// 8️⃣ Success response
+// 8️⃣ Final Response
 // ------------------------------------------------------------
 http_response_code(200);
 echo json_encode(['ok' => true, 'status' => $status]);
 exit;
+
