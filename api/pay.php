@@ -90,15 +90,17 @@ try {
 // ------------------------------
 $callbackUrl = base_url() . "/api/callback.php";
 
+// ------------------------------
+// BUILD Tranzak XP021 PAYLOAD
+// ------------------------------
 $payload = [
-    "appId"          => envv("TRANZAK_APP_ID"),
-    "amount"         => $amount,
-    "currency"       => "XAF",
-    "countryCode"    => "CM",
-    "paymentChannel" => $carrier,            // MTN/ORANGE
-    "customerNumber" => $phoneE164,
-    "reference"      => $orderId,
-    "callbackUrl"    => $callbackUrl
+    "amount"             => $amount,
+    "currencyCode"       => "XAF",
+    "description"        => "XafPay Payment",
+    "mchTransactionRef"  => $orderId,
+    "mobileWalletNumber" => $phoneE164,
+    "returnUrl"          => base_url() . "/api/callback.php",
+    "callbackUrl"        => base_url() . "/api/tranzak_webhook.php"
 ];
 
 log_event("pay.php xp021 payload", $payload);

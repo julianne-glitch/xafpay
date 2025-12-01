@@ -5,7 +5,7 @@ require_once __DIR__ . '/logger.php';
 
 /**
  * -----------------------------------------------------------
- * TOKEN CACHING (avoid calling Tranzak token every request)
+ * TOKEN CACHING (XP021)
  * -----------------------------------------------------------
  */
 function tranzak_get_token(): ?string
@@ -13,17 +13,16 @@ function tranzak_get_token(): ?string
     $cfg = tranzak_cfg();
     $cacheFile = "/tmp/tranzak_token.json";
 
-    // If cached token exists and not expired, use it
+    // Use cached token if valid
     if (file_exists($cacheFile)) {
         $data = json_decode(file_get_contents($cacheFile), true);
-
         if ($data && ($data["expires_at"] ?? 0) > time()) {
             return $data["token"];
         }
     }
 
-    // Request new token
-    $url = $cfg["base"] . "/xp021/v1/auth/token";
+    // Request new token (PROD or SANDBOX)
+    $url = $cfg["base"] . "/auth/token";
 
     $body = [
         "appId"  => $cfg["appId"],
@@ -52,13 +51,13 @@ function tranzak_get_token(): ?string
         return null;
     }
 
-    $token = $json["data"]["token"];
+    $token     = $json["data"]["token"];
     $expiresIn = $json["data"]["expiresIn"];
 
     // Cache token
     file_put_contents($cacheFile, json_encode([
         "token"      => $token,
-        "expires_at" => time() + ($expiresIn * 0.75) // refresh at 75%
+        "expires_at" => time() + ($expiresIn * 0.75)
     ]));
 
     return $token;
@@ -66,7 +65,7 @@ function tranzak_get_token(): ?string
 
 /**
  * -----------------------------------------------------------
- * INITIATE MOBILE MONEY PAYMENT (XP021)
+ * CREATE DIRECT MOBILE MONEY CHARGE (XP021)
  * -----------------------------------------------------------
  */
 function tranzak_xp021_initiate(array $payload)
@@ -82,7 +81,8 @@ function tranzak_xp021_initiate(array $payload)
         ];
     }
 
-    $url = $cfg["base"] . "/xp021/v1/collections/initiate";
+    // ✔ CORRECT endpoint (same as your working curl)
+    $url = $cfg["base"] . "/xp021/v1/request/create-mobile-wallet-charge";
 
     log_event("tranzak initiate url", $url);
     log_event("tranzak initiate payload", $payload);
@@ -94,7 +94,7 @@ function tranzak_xp021_initiate(array $payload)
         CURLOPT_HTTPHEADER     => [
             "Content-Type: application/json",
             "Authorization: Bearer $token",
-            "x-api-key: {$cfg['apiKey']}"
+            "x-app-id: {$cfg['appId']}"
         ],
         CURLOPT_POSTFIELDS     => json_encode($payload)
     ]);
