@@ -22,15 +22,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 $raw = file_get_contents('php://input');
 $data = json_decode($raw, true);
 
-// LOG RAW
 $logFile = '/tmp/tranzak_webhook.log';
 file_put_contents($logFile, date('c') . " RAW: " . $raw . PHP_EOL, FILE_APPEND);
 
-// XP021 → payload is under resource
+// XP021 payload → under "resource"
 $payload = $data['resource']
-        ?? $data['data']
-        ?? $data
-        ?? null;
+    ?? $data['data']
+    ?? $data
+    ?? null;
 
 if (!$payload) {
     http_response_code(400);
@@ -41,11 +40,7 @@ if (!$payload) {
 // ------------------------------------------------------------
 // Extract fields
 // ------------------------------------------------------------
-
-// For FAILED transactions, transactionId may be absent
-$txId = $payload['transactionId']
-    ?? $payload['txId']
-    ?? null;
+$txId = $payload['transactionId'] ?? null;
 
 $orderRef = $payload['mchTransactionRef']
     ?? $payload['merchantTransactionRef']
@@ -53,17 +48,11 @@ $orderRef = $payload['mchTransactionRef']
 
 $statusRaw = strtolower(trim(
     $payload['transactionStatus']
-    ?? $payload['paymentStatus']
-    ?? $payload['status']
-    ?? $payload['transaction_status']
-    ?? ''
+        ?? $payload['paymentStatus']
+        ?? $payload['status']
+        ?? ''
 ));
 
-$amount = $payload['amount'] ?? null;
-$errorCode = $payload['errorCode'] ?? null;
-$errorMessage = $payload['errorMessage'] ?? null;
-
-// TXID should NOT be required because FAILED transactions may not include it
 if (!$orderRef || !$statusRaw) {
     http_response_code(400);
     echo json_encode(['ok' => false, 'error' => 'Missing fields']);
@@ -100,7 +89,7 @@ try {
 }
 
 // ------------------------------------------------------------
-// Insert into webhooks table (always)
+// Log webhook event
 // ------------------------------------------------------------
 try {
     $stmt = $pdo->prepare("
@@ -111,12 +100,10 @@ try {
         ':ref'     => $orderRef,
         ':payload' => json_encode($payload),
     ]);
-} catch (Throwable $e) {
-    // continue even if webhook table insert fails
-}
+} catch (Throwable $e) {}
 
 // ------------------------------------------------------------
-// Check if payment already final (idempotency)
+// Check if payment already finalized
 // ------------------------------------------------------------
 $stmt = $pdo->prepare("
     SELECT status FROM payments WHERE reference_id = :ref LIMIT 1
@@ -125,27 +112,24 @@ $stmt->execute([':ref' => $orderRef]);
 $current = $stmt->fetch();
 
 if ($current && in_array($current['status'], ['successful', 'failed', 'canceled', 'expired'])) {
-    http_response_code(200);
     echo json_encode(['ok' => true, 'idempotent' => true]);
     exit;
 }
 
 // ------------------------------------------------------------
-// Ensure session exists (UPSERT)
+// PostgreSQL UPSERT for sessions
 // ------------------------------------------------------------
 try {
     $stmt = $pdo->prepare("
         INSERT INTO sessions (order_id, status)
         VALUES (:ref, :st)
-        ON DUPLICATE KEY UPDATE updated_at = NOW()
+        ON CONFLICT (order_id) DO UPDATE SET updated_at = NOW()
     ");
     $stmt->execute([':ref' => $orderRef, ':st' => $status]);
-} catch (Throwable $e) {
-    // continue
-}
+} catch (Throwable $e) {}
 
 // ------------------------------------------------------------
-// Update payments table
+// Update payments table (FINAL FIX – NO error_code columns)
 // ------------------------------------------------------------
 try {
     $stmt = $pdo->prepare("
@@ -153,8 +137,6 @@ try {
         SET status = :st,
             response_payload = :payload,
             transaction_id = :txid,
-            error_code = :errcode,
-            error_message = :errmsg,
             updated_at = NOW()
         WHERE reference_id = :ref
     ");
@@ -162,8 +144,6 @@ try {
         ':st'      => $status,
         ':payload' => json_encode($payload),
         ':txid'    => $txId,
-        ':errcode' => $errorCode,
-        ':errmsg'  => $errorMessage,
         ':ref'     => $orderRef,
     ]);
 } catch (Throwable $e) {
@@ -171,7 +151,7 @@ try {
 }
 
 // ------------------------------------------------------------
-// Update session status
+// Update session
 // ------------------------------------------------------------
 try {
     $stmt = $pdo->prepare("
@@ -180,12 +160,10 @@ try {
         WHERE order_id = :ref
     ");
     $stmt->execute([':st' => $status, ':ref' => $orderRef]);
-} catch (Throwable $e) {
-    // continue
-}
+} catch (Throwable $e) {}
 
 // ------------------------------------------------------------
-// Return success ALWAYS (required by Tranzak)
+// Success response (required by Tranzak)
 // ------------------------------------------------------------
 http_response_code(200);
 echo json_encode(['ok' => true, 'status' => $status]);
