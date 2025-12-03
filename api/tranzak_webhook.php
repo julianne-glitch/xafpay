@@ -22,12 +22,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 $raw = file_get_contents('php://input');
 $data = json_decode($raw, true);
 
-// LOG (Render-safe)
+// LOG RAW
 $logFile = '/tmp/tranzak_webhook.log';
 file_put_contents($logFile, date('c') . " RAW: " . $raw . PHP_EOL, FILE_APPEND);
 
-// Payload can be {data:{}} or {}
-$payload = $data['data'] ?? $data ?? null;
+// XP021 → payload is under resource
+$payload = $data['resource']
+        ?? $data['data']
+        ?? $data
+        ?? null;
 
 if (!$payload) {
     http_response_code(400);
@@ -38,6 +41,8 @@ if (!$payload) {
 // ------------------------------------------------------------
 // Extract fields
 // ------------------------------------------------------------
+
+// For FAILED transactions, transactionId may be absent
 $txId = $payload['transactionId']
     ?? $payload['txId']
     ?? null;
@@ -50,13 +55,16 @@ $statusRaw = strtolower(trim(
     $payload['transactionStatus']
     ?? $payload['paymentStatus']
     ?? $payload['status']
-    ?? $payload['transaction_status']   // ⭐ added for XP021 compatibility
+    ?? $payload['transaction_status']
     ?? ''
 ));
 
 $amount = $payload['amount'] ?? null;
+$errorCode = $payload['errorCode'] ?? null;
+$errorMessage = $payload['errorMessage'] ?? null;
 
-if (!$txId || !$orderRef || !$statusRaw) {
+// TXID should NOT be required because FAILED transactions may not include it
+if (!$orderRef || !$statusRaw) {
     http_response_code(400);
     echo json_encode(['ok' => false, 'error' => 'Missing fields']);
     exit;
@@ -92,7 +100,7 @@ try {
 }
 
 // ------------------------------------------------------------
-// Log webhook event (always)
+// Insert into webhooks table (always)
 // ------------------------------------------------------------
 try {
     $stmt = $pdo->prepare("
@@ -104,11 +112,11 @@ try {
         ':payload' => json_encode($payload),
     ]);
 } catch (Throwable $e) {
-    // continue
+    // continue even if webhook table insert fails
 }
 
 // ------------------------------------------------------------
-// Check if already final (idempotent)
+// Check if payment already final (idempotency)
 // ------------------------------------------------------------
 $stmt = $pdo->prepare("
     SELECT status FROM payments WHERE reference_id = :ref LIMIT 1
@@ -123,7 +131,21 @@ if ($current && in_array($current['status'], ['successful', 'failed', 'canceled'
 }
 
 // ------------------------------------------------------------
-// Update payments
+// Ensure session exists (UPSERT)
+// ------------------------------------------------------------
+try {
+    $stmt = $pdo->prepare("
+        INSERT INTO sessions (order_id, status)
+        VALUES (:ref, :st)
+        ON DUPLICATE KEY UPDATE updated_at = NOW()
+    ");
+    $stmt->execute([':ref' => $orderRef, ':st' => $status]);
+} catch (Throwable $e) {
+    // continue
+}
+
+// ------------------------------------------------------------
+// Update payments table
 // ------------------------------------------------------------
 try {
     $stmt = $pdo->prepare("
@@ -131,6 +153,8 @@ try {
         SET status = :st,
             response_payload = :payload,
             transaction_id = :txid,
+            error_code = :errcode,
+            error_message = :errmsg,
             updated_at = NOW()
         WHERE reference_id = :ref
     ");
@@ -138,6 +162,8 @@ try {
         ':st'      => $status,
         ':payload' => json_encode($payload),
         ':txid'    => $txId,
+        ':errcode' => $errorCode,
+        ':errmsg'  => $errorMessage,
         ':ref'     => $orderRef,
     ]);
 } catch (Throwable $e) {
@@ -145,7 +171,7 @@ try {
 }
 
 // ------------------------------------------------------------
-// Update session
+// Update session status
 // ------------------------------------------------------------
 try {
     $stmt = $pdo->prepare("
@@ -159,9 +185,10 @@ try {
 }
 
 // ------------------------------------------------------------
-// SUCCESS RESPONSE (mandatory)
+// Return success ALWAYS (required by Tranzak)
 // ------------------------------------------------------------
 http_response_code(200);
 echo json_encode(['ok' => true, 'status' => $status]);
 exit;
 
+?>
