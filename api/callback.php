@@ -9,7 +9,7 @@ log_event("callback.php reached", [
 ]);
 
 // ------------------------------------------------------------
-// CORS (optional, but harmless)
+// CORS
 // ------------------------------------------------------------
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: GET, OPTIONS");
@@ -21,9 +21,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 }
 
 // ------------------------------------------------------------
-// Extract the order_id sent by Tranzak
+// Get order_id + email from Tranzak returnUrl
 // ------------------------------------------------------------
 $orderId = $_GET['order_id'] ?? null;
+$email   = $_GET['email'] ?? null;   // ⭐ NEW — passed from pay.php
 
 if (!$orderId) {
     log_event("callback.php missing_order_id", $_GET);
@@ -32,7 +33,7 @@ if (!$orderId) {
 }
 
 // ------------------------------------------------------------
-// Confirm the session exists
+// Lookup order in sessions
 // ------------------------------------------------------------
 try {
     $pdo = db_connect();
@@ -54,18 +55,28 @@ if (!$session) {
 }
 
 // ------------------------------------------------------------
-// DO NOT update the order status here.
-// The webhook (tranzak_webhook.php) handles it.
+// IMPORTANT: DO NOT update payment status here.
+// Webhook controls all status updates.
 // ------------------------------------------------------------
 
 // ------------------------------------------------------------
-// Redirect back to WooCommerce
+// Build WooCommerce Redirect URL
 // ------------------------------------------------------------
-$wcBase = wc_base_url();                 // from .env → WC_BASE_URL
-$returnUrl = "{$wcBase}/?order_id={$orderId}";
+$wcBase = wc_base_url();  // from .env
+
+// We forward email to WooCommerce so the plugin snippet can use it.
+$query = http_build_query([
+    "order_id" => $orderId,
+    "email"    => $email   // ⭐ NEW
+]);
+
+$returnUrl = "{$wcBase}/?{$query}";
 
 log_event("callback.php redirecting_to", $returnUrl);
 
-// Tranzak requires an HTML redirect
+// ------------------------------------------------------------
+// Redirect Customer → WooCommerce
+// ------------------------------------------------------------
 header("Location: $returnUrl");
 exit;
+

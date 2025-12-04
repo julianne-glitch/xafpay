@@ -2,7 +2,7 @@
 
 require_once __DIR__ . '/../config.php';
 require_once __DIR__ . '/logger.php';
-require_once __DIR__ . '/tranzak_helpers.php'; // we will update this too
+require_once __DIR__ . '/tranzak_helpers.php';
 
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Headers: Content-Type, Authorization");
@@ -15,56 +15,61 @@ if ($_SERVER["REQUEST_METHOD"] === "OPTIONS") {
 
 header("Content-Type: application/json");
 
-// ------------------------------
+// ----------------------------------------------------
 // READ INPUT
-// ------------------------------
+// ----------------------------------------------------
 $raw = file_get_contents("php://input");
 $input = json_decode($raw, true) ?: $_POST;
 
 log_event("pay.php input", $input);
 
-$amount = floatval($input["amount"] ?? 0);
-$phone  = $input["phone"] ?? "";
+$amount  = floatval($input["amount"] ?? 0);
+$phone   = $input["phone"] ?? "";
+$email   = $input["email"] ?? "";   // ⭐ NEW
 $carrier = strtoupper($input["carrier"] ?? "MTN");
 
+// ----------------------------------------------------
+// VALIDATE INPUT
+// ----------------------------------------------------
 if (!$amount || !$phone) {
     json_out(["ok" => false, "error" => "Missing amount or phone"], 400);
 }
 
-// ------------------------------
-// PHONE NORMALIZATION (E164)
-// ------------------------------
-$phone = preg_replace("/\D/", "", $phone);
-
-if (strlen($phone) === 9) {
-    $phoneE164 = "237" . $phone;
-} else {
-    $phoneE164 = $phone;
+if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+    json_out(["ok" => false, "error" => "Invalid email"], 400);
 }
+
+// ----------------------------------------------------
+// PHONE → E164
+// ----------------------------------------------------
+$phone = preg_replace("/\D/", "", $phone);
+$phoneE164 = (strlen($phone) === 9) ? "237".$phone : $phone;
 
 log_event("pay.php phoneE164", $phoneE164);
 
-// ------------------------------
+// ----------------------------------------------------
 // ORDER ID
-// ------------------------------
+// ----------------------------------------------------
 $orderId = "ORD" . time() . rand(1000, 9999);
 
-// ------------------------------
+// ----------------------------------------------------
 // DB: CREATE SESSION + PAYMENT
-// ------------------------------
+// ----------------------------------------------------
 try {
     $pdo = db_connect();
 
+    // ⭐ Now includes email
     $stmt = $pdo->prepare("
-        INSERT INTO sessions(amount, currency, phone_number, carrier_code, order_id, status)
-        VALUES (:amount, 'XAF', :phone, :carrier, :oid, 'pending')
+        INSERT INTO sessions(amount, currency, phone_number, email, carrier_code, order_id, status)
+        VALUES (:amount, 'XAF', :phone, :email, :carrier, :oid, 'pending')
         RETURNING id
     ");
     $stmt->execute([
-        ":amount" => $amount,
-        ":phone"  => $phone,
+        ":amount"  => $amount,
+        ":phone"   => $phone,
+        ":email"   => $email,
         ":carrier" => $carrier,
-        ":oid"    => $orderId
+        ":oid"     => $orderId
     ]);
     $sessionId = $stmt->fetchColumn();
 
@@ -74,10 +79,10 @@ try {
         RETURNING id
     ");
     $stmt2->execute([
-        ":sid"    => $sessionId,
-        ":amount" => $amount,
+        ":sid"     => $sessionId,
+        ":amount"  => $amount,
         ":carrier" => $carrier,
-        ":ref"    => $orderId
+        ":ref"     => $orderId
     ]);
     $paymentId = $stmt2->fetchColumn();
 
@@ -85,36 +90,34 @@ try {
     json_out(["ok" => false, "error" => "DB Error: " . $e->getMessage()], 500);
 }
 
-// ------------------------------
-// BUILD TRanzak XP021 PAYLOAD
-// ------------------------------
-$callbackUrl = base_url() . "/api/callback.php";
+// ----------------------------------------------------
+// CALLBACK + WEBHOOK URLS
+// ----------------------------------------------------
+$callbackUrl = base_url() . "/api/callback.php?email=" . urlencode($email);
+$webhookUrl  = base_url() . "/api/tranzak_webhook.php";
 
-// ------------------------------
-// BUILD Tranzak XP021 PAYLOAD
-// ------------------------------
+// ----------------------------------------------------
+// TRANZAK XP021 PAYLOAD
+// ----------------------------------------------------
 $payload = [
     "amount"             => $amount,
     "currencyCode"       => "XAF",
     "description"        => "XafPay Payment",
     "mchTransactionRef"  => $orderId,
     "mobileWalletNumber" => $phoneE164,
-    "returnUrl"          => base_url() . "/api/callback.php",
-    "callbackUrl"        => base_url() . "/api/tranzak_webhook.php"
+    "returnUrl"          => $callbackUrl,     // ⭐ email passed forward
+    "callbackUrl"        => $webhookUrl
 ];
 
 log_event("pay.php xp021 payload", $payload);
 
-// ------------------------------
-// CALL TRANZAK XP021 INITIATE
-// ------------------------------
-$resp = tranzak_xp021_initiate($payload);  // new helper method
+// ----------------------------------------------------
+// CALL TRANZAK INITIATE
+// ----------------------------------------------------
+$resp = tranzak_xp021_initiate($payload);
 
 log_event("pay.php xp021 response", $resp);
 
-// ------------------------------
-// VALIDATE RESPONSE
-// ------------------------------
 if (!$resp || empty($resp["success"])) {
     json_out([
         "ok"    => false,
@@ -125,9 +128,9 @@ if (!$resp || empty($resp["success"])) {
 
 $requestId = $resp["data"]["requestId"] ?? null;
 
-// ------------------------------
-// SAVE TRanzak REQUEST ID
-// ------------------------------
+// ----------------------------------------------------
+// SAVE TRANZAK REQUEST ID
+// ----------------------------------------------------
 $pdo->prepare("
     UPDATE payments
     SET transaction_request_id = :tid,
@@ -140,9 +143,9 @@ $pdo->prepare("
     ":pid"     => $paymentId
 ]);
 
-// ------------------------------
-// FINAL API RESPONSE TO FRONTEND
-// ------------------------------
+// ----------------------------------------------------
+// FINAL RESPONSE TO FRONTEND
+// ----------------------------------------------------
 json_out([
     "ok"                 => true,
     "session_id"         => $sessionId,
@@ -150,6 +153,7 @@ json_out([
     "order_id"           => $orderId,
     "amount"             => $amount,
     "currency"           => "XAF",
+    "email"              => $email,
     "phone"              => $phone,
     "phone_e164"         => $phoneE164,
     "tranzak_request_id" => $requestId,
