@@ -20,11 +20,13 @@ function smtp_send($to, $subject, $html, $cfg)
         $mail->SMTPAuth   = true;
         $mail->Username   = $cfg['username'];
         $mail->Password   = $cfg['password'];
-        $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;   // ⭐ correct constant
+
+        // ⭐ Use legacy TLS (your PHPMailer supports this)
+        $mail->SMTPSecure = 'tls';
         $mail->Port       = $cfg['port'];
 
-        // Charset (no deprecation warning)
-        $mail->CharSet = PHPMailer::CHARSET_UTF8;
+        // Charset
+        $mail->CharSet = 'UTF-8';
 
         // FROM / TO
         $mail->setFrom($cfg['from_email'], $cfg['from_name']);
