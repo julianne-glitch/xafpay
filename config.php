@@ -178,4 +178,18 @@ if (!defined('CONFIG_LOADED')) {
 
         return $data['user'];
     }
+        // --------------------------------------------------------
+    // MAIL (SMTP) CONFIG — MailerSend
+    // --------------------------------------------------------
+    function mail_cfg(): array {
+        return [
+            'host'       => envv('SMTP_HOST', 'smtp.mailersend.net'),
+            'port'       => envv('SMTP_PORT', '587'),
+            'username'   => envv('SMTP_USERNAME', ''),   // SMTP user from MailerSend
+            'password'   => envv('SMTP_PASSWORD', ''),   // SMTP password
+            'from_email' => envv('MAIL_FROM', 'no-reply@mail.xafpay.com'),
+            'from_name'  => envv('MAIL_FROM_NAME', 'XafPay'),
+        ];
+    }
+
 }
