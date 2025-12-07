@@ -2,7 +2,13 @@
 use PHPMailer\PHPMailer\PHPMailer;
 use PHPMailer\PHPMailer\Exception;
 
-require_once __DIR__ . '/../vendor/autoload.php';
+// -------------------------
+// MANUAL PHPMailer includes
+// -------------------------
+require_once __DIR__ . '/phpmailer/PHPMailer.php';
+require_once __DIR__ . '/phpmailer/SMTP.php';
+require_once __DIR__ . '/phpmailer/Exception.php';
+
 require_once __DIR__ . '/../config.php';
 
 function smtp_send($to, $subject, $html, $cfg)
