@@ -2,7 +2,6 @@
 use PHPMailer\PHPMailer\PHPMailer;
 use PHPMailer\PHPMailer\Exception;
 
-// Manual PHPMailer include
 require_once __DIR__ . '/phpmailer/PHPMailer.php';
 require_once __DIR__ . '/phpmailer/SMTP.php';
 require_once __DIR__ . '/phpmailer/Exception.php';
@@ -21,12 +20,9 @@ function smtp_send($to, $subject, $html, $cfg)
         $mail->Username   = $cfg['username'];
         $mail->Password   = $cfg['password'];
 
-        // ⭐ Use legacy TLS (your PHPMailer supports this)
+        // TLS encryption (legacy compatible)
         $mail->SMTPSecure = 'tls';
         $mail->Port       = $cfg['port'];
-
-        // Charset
-        $mail->CharSet = 'UTF-8';
 
         // FROM / TO
         $mail->setFrom($cfg['from_email'], $cfg['from_name']);
