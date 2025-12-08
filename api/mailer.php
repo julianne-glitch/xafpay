@@ -12,14 +12,14 @@ function smtp_send($to, $subject, $html, $cfg)
     $mail = new PHPMailer(true);
 
     try {
-        // FORCE SMTP ONLY
+        // SMTP ONLY
         $mail->isSMTP();
         $mail->Host       = $cfg['host'];
         $mail->SMTPAuth   = true;
         $mail->Username   = $cfg['username'];
         $mail->Password   = $cfg['password'];
-        $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
         $mail->Port       = (int)$cfg['port'];
+        $mail->SMTPSecure = 'tls';   // ← WORKS ON ALL PHPMailer VERSIONS
 
         // FROM / TO
         $mail->setFrom($cfg['from_email'], $cfg['from_name']);
@@ -27,11 +27,10 @@ function smtp_send($to, $subject, $html, $cfg)
 
         // CONTENT
         $mail->isHTML(true);
+        $mail->CharSet = 'UTF-8';
         $mail->Subject = $subject;
         $mail->Body    = $html;
-        $mail->CharSet = 'UTF-8';
 
-        // SEND
         return $mail->send();
 
     } catch (Exception $e) {
