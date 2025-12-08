@@ -13,35 +13,30 @@ function smtp_send($to, $subject, $html, $cfg)
     $mail = new PHPMailer(true);
 
     try {
-        // 🔥 Force SMTP only — never fallback to sendmail
+        // ---- SMTP ONLY ----
         $mail->isSMTP();
-        $mail->Mailer = "smtp";
         $mail->SMTPAuth = true;
-        $mail->SMTPAutoTLS = true;  // Ensures TLS 1.2+
 
-        // SMTP CONFIG
-        $mail->Host       = $cfg['host'];        // smtp.mailersend.net
-        $mail->Port       = (int)$cfg['port'];   // 587
-        $mail->Username   = $cfg['username'];    // SMTP user
-        $mail->Password   = $cfg['password'];    // SMTP pass
-        $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
+        // ---- SMTP SERVER ----
+        $mail->Host = $cfg['host'];          // smtp.mailersend.net
+        $mail->Port = (int)$cfg['port'];     // 587
+        $mail->Username = $cfg['username'];  // SMTP username
+        $mail->Password = $cfg['password'];  // SMTP password
 
-        // CHARSET
-        $mail->CharSet = 'UTF-8';
+        // ---- ENCRYPTION (old PHPMailer syntax) ----
+        $mail->SMTPSecure = 'tls';           // TLS mode
 
-        // FROM / TO
+        // ---- FROM / TO ----
         $mail->setFrom($cfg['from_email'], $cfg['from_name']);
         $mail->addAddress($to);
 
-        // CONTENT
+        // ---- CONTENT ----
         $mail->isHTML(true);
+        $mail->CharSet = 'UTF-8';
         $mail->Subject = $subject;
         $mail->Body    = $html;
 
-        // 🔥 Correct way to prevent sendmail fallback:
-        $mail->AllowEmpty = false;   // Disable fallback
-        $mail->Sendmail   = null;    // Must NOT be a fake path
-
+        // ---- SEND ----
         $mail->send();
         return true;
 
