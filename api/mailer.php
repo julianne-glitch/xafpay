@@ -2,10 +2,7 @@
 use PHPMailer\PHPMailer\PHPMailer;
 use PHPMailer\PHPMailer\Exception;
 
-require_once __DIR__ . '/phpmailer/PHPMailer.php';
-require_once __DIR__ . '/phpmailer/SMTP.php';
-require_once __DIR__ . '/phpmailer/Exception.php';
-
+require_once __DIR__ . '/../vendor/autoload.php';
 require_once __DIR__ . '/../config.php';
 
 function smtp_send($to, $subject, $html, $cfg)
@@ -13,22 +10,19 @@ function smtp_send($to, $subject, $html, $cfg)
     $mail = new PHPMailer(true);
 
     try {
-        // SMTP CONFIG
         $mail->isSMTP();
         $mail->Host       = $cfg['host'];
         $mail->SMTPAuth   = true;
         $mail->Username   = $cfg['username'];
         $mail->Password   = $cfg['password'];
+        $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
+        $mail->Port       = $cfg['port'];
 
-        // WORKING SMTP DEBUG
+        // Debugging (now valid)
         $mail->SMTPDebug = 2;
         $mail->Debugoutput = function($msg) {
             error_log("SMTP-DEBUG: " . $msg);
         };
-
-        // TLS encryption
-        $mail->SMTPSecure = 'tls';
-        $mail->Port       = $cfg['port'];
 
         $mail->setFrom($cfg['from_email'], $cfg['from_name']);
         $mail->addAddress($to);
