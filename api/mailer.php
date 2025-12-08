@@ -2,9 +2,12 @@
 use PHPMailer\PHPMailer\PHPMailer;
 use PHPMailer\PHPMailer\Exception;
 
+// ------------------------------------------------------------
+// MUST load in this order
+// ------------------------------------------------------------
+require_once __DIR__ . '/phpmailer/Exception.php';
 require_once __DIR__ . '/phpmailer/PHPMailer.php';
 require_once __DIR__ . '/phpmailer/SMTP.php';
-require_once __DIR__ . '/phpmailer/Exception.php';
 
 require_once __DIR__ . '/../config.php';
 
@@ -13,6 +16,7 @@ function smtp_send($to, $subject, $html, $cfg)
     $mail = new PHPMailer(true);
 
     try {
+        // SMTP CONFIG
         $mail->isSMTP();
         $mail->Host       = $cfg['host'];
         $mail->SMTPAuth   = true;
@@ -21,10 +25,13 @@ function smtp_send($to, $subject, $html, $cfg)
 
         $mail->SMTPSecure = 'tls';
         $mail->Port       = $cfg['port'];
+        $mail->CharSet    = 'UTF-8';
 
+        // FROM / TO
         $mail->setFrom($cfg['from_email'], $cfg['from_name']);
         $mail->addAddress($to);
 
+        // CONTENT
         $mail->isHTML(true);
         $mail->Subject = $subject;
         $mail->Body    = $html;
@@ -37,3 +44,4 @@ function smtp_send($to, $subject, $html, $cfg)
         return false;
     }
 }
+
