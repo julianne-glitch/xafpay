@@ -2,8 +2,11 @@
 use PHPMailer\PHPMailer\PHPMailer;
 use PHPMailer\PHPMailer\Exception;
 
-// Use Composer autoload (loads full PHPMailer library)
-require_once __DIR__ . '/../vendor/autoload.php';
+// Load PHPMailer from your local directory
+require_once __DIR__ . '/phpmailer/Exception.php';
+require_once __DIR__ . '/phpmailer/PHPMailer.php';
+require_once __DIR__ . '/phpmailer/SMTP.php';
+
 require_once __DIR__ . '/../config.php';
 
 function smtp_send($to, $subject, $html, $cfg)
@@ -11,23 +14,28 @@ function smtp_send($to, $subject, $html, $cfg)
     $mail = new PHPMailer(true);
 
     try {
-        // SMTP ONLY
+        // SMTP ONLY — do not allow fallback to sendmail
         $mail->isSMTP();
         $mail->SMTPAuth   = true;
-        $mail->SMTPAutoTLS = true;
-        $mail->Host       = $cfg['host'];
+
+        // Correct TLS (no deprecated constants)
+        $mail->SMTPSecure = 'tls';
         $mail->Port       = (int)$cfg['port'];
+        $mail->Host       = $cfg['host'];
         $mail->Username   = $cfg['username'];
         $mail->Password   = $cfg['password'];
-        $mail->SMTPSecure = 'tls';
 
-        // FROM / TO
+        // FORCE PHPMailer not to fallback to sendmail
+        $mail->SMTPAutoTLS = false;
+        $mail->SMTPKeepAlive = false;
+
+        // Set From / To
         $mail->setFrom($cfg['from_email'], $cfg['from_name']);
         $mail->addAddress($to);
 
-        // EMAIL CONTENT
+        // HTML Content
         $mail->isHTML(true);
-        $mail->setCharSet('UTF-8');
+        $mail->CharSet = 'UTF-8';  // Works fine in PHPMailer 6.1 or older
         $mail->Subject = $subject;
         $mail->Body    = $html;
 
@@ -38,3 +46,4 @@ function smtp_send($to, $subject, $html, $cfg)
         return false;
     }
 }
+
