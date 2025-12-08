@@ -45,4 +45,4 @@ function smtp_send($to, $subject, $html, $cfg)
         return false;
     }
 }
-EOF
+
