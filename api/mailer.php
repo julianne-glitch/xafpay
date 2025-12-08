@@ -1,4 +1,3 @@
-cat > /app/api/mailer.php << 'EOF'
 <?php
 use PHPMailer\PHPMailer\PHPMailer;
 use PHPMailer\PHPMailer\Exception;
@@ -45,4 +44,3 @@ function smtp_send($to, $subject, $html, $cfg)
         return false;
     }
 }
-
