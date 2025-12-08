@@ -2,9 +2,8 @@
 use PHPMailer\PHPMailer\PHPMailer;
 use PHPMailer\PHPMailer\Exception;
 
-require_once __DIR__ . '/phpmailer/PHPMailer.php';
-require_once __DIR__ . '/phpmailer/SMTP.php';
-require_once __DIR__ . '/phpmailer/Exception.php';
+// Use Composer autoload (loads full PHPMailer library)
+require_once __DIR__ . '/../vendor/autoload.php';
 require_once __DIR__ . '/../config.php';
 
 function smtp_send($to, $subject, $html, $cfg)
@@ -14,20 +13,21 @@ function smtp_send($to, $subject, $html, $cfg)
     try {
         // SMTP ONLY
         $mail->isSMTP();
-        $mail->Host       = $cfg['host'];
         $mail->SMTPAuth   = true;
+        $mail->SMTPAutoTLS = true;
+        $mail->Host       = $cfg['host'];
+        $mail->Port       = (int)$cfg['port'];
         $mail->Username   = $cfg['username'];
         $mail->Password   = $cfg['password'];
-        $mail->Port       = (int)$cfg['port'];
-        $mail->SMTPSecure = 'tls';   // ← WORKS ON ALL PHPMailer VERSIONS
+        $mail->SMTPSecure = 'tls';
 
         // FROM / TO
         $mail->setFrom($cfg['from_email'], $cfg['from_name']);
         $mail->addAddress($to);
 
-        // CONTENT
+        // EMAIL CONTENT
         $mail->isHTML(true);
-        $mail->CharSet = 'UTF-8';
+        $mail->setCharSet('UTF-8');
         $mail->Subject = $subject;
         $mail->Body    = $html;
 
