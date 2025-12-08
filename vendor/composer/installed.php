@@ -3,7 +3,7 @@
         'name' => 'xafpay/backend',
         'pretty_version' => 'dev-main',
         'version' => 'dev-main',
-        'reference' => '9e6eebdbfdd1666be3a44dcd029104ffb18ef009',
+        'reference' => 'a6da5c8234434a98d53d5abbf37734f480e7ffec',
         'type' => 'library',
         'install_path' => __DIR__ . '/../../',
         'aliases' => array(),
@@ -157,7 +157,7 @@
         'xafpay/backend' => array(
             'pretty_version' => 'dev-main',
             'version' => 'dev-main',
-            'reference' => '9e6eebdbfdd1666be3a44dcd029104ffb18ef009',
+            'reference' => 'a6da5c8234434a98d53d5abbf37734f480e7ffec',
             'type' => 'library',
             'install_path' => __DIR__ . '/../../',
             'aliases' => array(),
