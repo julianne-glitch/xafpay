@@ -187,7 +187,7 @@ if (!defined('CONFIG_LOADED')) {
             'port'       => envv('SMTP_PORT', '587'),
             'username'   => envv('SMTP_USERNAME', ''),   // SMTP user from MailerSend
             'password'   => envv('SMTP_PASSWORD', ''),   // SMTP password
-            'from_email' => envv('MAIL_FROM', 'MS_Okq8Ib@mail.xafpay.com'),
+            'from_email' => envv('MAIL_FROM', 'support@xafpay.com'),
             'from_name'  => envv('MAIL_FROM_NAME', 'XafPay'),
         ];
     }

@@ -1,6 +1,6 @@
 <?php
 require_once __DIR__ . '/../config.php';
-require_once __DIR__ . '/mailer.php'; // we will create this
+require_once __DIR__ . '/mailer.php';
 
 function send_receipt_email($to, $orderId, $amount, $phone)
 {
@@ -18,8 +18,7 @@ function send_receipt_email($to, $orderId, $amount, $phone)
 
             <div style='background:#e60023; padding:20px; text-align:center;'>
                 <img src='https://pay.xafpay.com/assets/logo.png' alt='XafPay' style='height:60px;' />
-
-         </div>
+            </div>
 
             <div style='padding:25px;'>
                 <h2 style='color:#111;'>Payment Successful</h2>
@@ -27,7 +26,7 @@ function send_receipt_email($to, $orderId, $amount, $phone)
                     Thank you for using <strong>XafPay</strong>.
                 </p>
 
-                <table style='width:100%; margin-top:20px;'>
+                <table style='width:100%; margin-top:20px; font-size:15px;'>
                     <tr><td>Order ID:</td><td align='right'><strong>$orderId</strong></td></tr>
                     <tr><td>Amount:</td><td align='right'><strong>$amountFmt</strong></td></tr>
                     <tr><td>Phone:</td><td align='right'>$phone</td></tr>
@@ -36,8 +35,8 @@ function send_receipt_email($to, $orderId, $amount, $phone)
 
                 <p style='margin-top:25px; font-size:14px; color:#777; text-align:center;'>
                     Need help? Email us at 
-                    <a href='mailto:support@mail.xafpay.com' style='color:#e60023;'>
-                        support@mail.xafpay.com
+                    <a href='mailto:support@xafpay.com' style='color:#e60023;'>
+                        support@xafpay.com
                     </a>
                 </p>
             </div>
