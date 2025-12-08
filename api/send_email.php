@@ -6,50 +6,68 @@ function send_receipt_email($to, $orderId, $amount, $phone)
 {
     $cfg = mail_cfg();
 
-    $subject = "Payment Receipt – XafPay (#$orderId)";
+    $subject  = "Your XafPay Receipt – Order #$orderId";
     $amountFmt = number_format($amount, 0) . " XAF";
     $dateFmt   = date("F j, Y, g:i a");
 
+    // ------------------------------------------------
+    // Plain text version (required to avoid spam)
+    // ------------------------------------------------
+    $plain = 
+"Your XafPay Receipt
+
+Order ID: $orderId
+Amount: $amountFmt
+Phone: $phone
+Date: $dateFmt
+
+Thank you for using XafPay.
+If you need assistance: support@xafpay.com
+© " . date("Y") . " XafPay";
+
+
+    // ------------------------------------------------
+    // HTML version (minimal + bank-style)
+    // ------------------------------------------------
     $html = "
     <html>
-    <body style='font-family: Arial, sans-serif; background:#f6f6f6; padding:20px;'>
+    <body style='margin:0; padding:0; background:#f5f5f5; font-family:Arial, sans-serif;'>
 
-        <div style='max-width:600px; margin:auto; background:white; border-radius:10px; overflow:hidden; box-shadow:0 4px 12px rgba(0,0,0,0.1);'>
+        <div style='max-width:600px; margin:auto; padding:20px;'>
 
-            <div style='background:#e60023; padding:20px; text-align:center;'>
-                <img src='https://pay.xafpay.com/assets/logo.png' alt='XafPay' style='height:60px;' />
+            <div style='text-align:left; margin-bottom:20px;'>
+                <img src='https://pay.xafpay.com/assets/logo.png' alt='XafPay' style='height:40px; opacity:0.9;'>
             </div>
 
-            <div style='padding:25px;'>
-                <h2 style='color:#111;'>Payment Successful</h2>
-                <p style='font-size:15px; color:#444;'>
-                    Thank you for using <strong>XafPay</strong>.
+            <div style='background:#ffffff; padding:20px; border:1px solid #e0e0e0; border-radius:6px;'>
+
+                <h2 style='font-size:20px; color:#222; margin-top:0;'>Payment Receipt</h2>
+
+                <p style='font-size:14px; color:#444;'>
+                    Thank you for your payment. Below are your transaction details.
                 </p>
 
-                <table style='width:100%; margin-top:20px; font-size:15px;'>
-                    <tr><td>Order ID:</td><td align='right'><strong>$orderId</strong></td></tr>
-                    <tr><td>Amount:</td><td align='right'><strong>$amountFmt</strong></td></tr>
-                    <tr><td>Phone:</td><td align='right'>$phone</td></tr>
-                    <tr><td>Date:</td><td align='right'>$dateFmt</td></tr>
+                <table style='width:100%; margin-top:15px; font-size:14px; color:#333; line-height:1.6;'>
+                    <tr><td>Order ID:</td><td style='text-align:right; font-weight:600;'>$orderId</td></tr>
+                    <tr><td>Amount:</td><td style='text-align:right; font-weight:600;'>$amountFmt</td></tr>
+                    <tr><td>Phone:</td><td style='text-align:right;'>$phone</td></tr>
+                    <tr><td>Date:</td><td style='text-align:right;'>$dateFmt</td></tr>
                 </table>
 
-                <p style='margin-top:25px; font-size:14px; color:#777; text-align:center;'>
-                    Need help? Email us at 
-                    <a href='mailto:support@xafpay.com' style='color:#e60023;'>
-                        support@xafpay.com
-                    </a>
-                </p>
             </div>
 
-            <div style='background:#111; padding:20px; text-align:center; color:#bbb; font-size:13px;'>
-                © " . date("Y") . " XafPay
-            </div>
+            <p style='text-align:center; color:#777; font-size:12px; margin-top:25px;'>
+                Need help? Email <a href='mailto:support@xafpay.com' style='color:#555;'>support@xafpay.com</a><br>
+                © " . date("Y") . " XafPay. All rights reserved.
+            </p>
 
         </div>
 
     </body>
-    </html>";
+    </html>
+    ";
 
-    return smtp_send($to, $subject, $html, $cfg);
+    // Send multipart email (HTML + plain)
+    return smtp_send($to, $subject, $html, $cfg, $plain);
 }
 ?>
