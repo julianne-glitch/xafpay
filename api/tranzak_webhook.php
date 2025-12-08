@@ -126,4 +126,3 @@ if ($status === "successful" && $customerEmail) {
 echo json_encode(["ok" => true, "status" => $status]);
 exit;
 
-git
