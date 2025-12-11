@@ -4,7 +4,6 @@ require_once __DIR__ . '/../config.php';
 require_once __DIR__ . '/logger.php';
 require_once __DIR__ . '/send_email.php';
 
-// CORS
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
 header("Access-Control-Allow-Headers: Content-Type, Authorization");
@@ -14,18 +13,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     exit;
 }
 
-// RAW PAYLOAD
+// -------------------------------------
+// READ RAW PAYLOAD
+// -------------------------------------
 $raw = file_get_contents("php://input");
 $data = json_decode($raw, true);
 
 $logFile = "/tmp/tranzak_webhook.log";
-file_put_contents($logFile, date('c')." RAW: ".$raw.PHP_EOL, FILE_APPEND);
+file_put_contents($logFile, date('c') . " RAW: " . $raw . PHP_EOL, FILE_APPEND);
 
-// Extract XP021 structure
+// Tranzak XP021 payload wrapper
 $payload = $data["resource"] ?? $data["data"] ?? $data;
 
-$orderRef = $payload["mchTransactionRef"] ?? null;
-$txId     = $payload["transactionId"] ?? null;
+// Extract references
+$orderRef = $payload["mchTransactionRef"] ?? null;  // internal XafPay order ID
+$txId     = $payload["transactionId"] ?? null;      // Tranzak transaction ID
 
 // Normalize status
 $statusRaw = strtolower($payload["transactionStatus"] ?? $payload["status"] ?? "");
@@ -37,19 +39,23 @@ $status = match ($statusRaw) {
     default                               => "pending"
 };
 
-file_put_contents($logFile, date('c')." REF:$orderRef STATUS:$status".PHP_EOL, FILE_APPEND);
+file_put_contents($logFile, date('c') . " REF:$orderRef STATUS:$status" . PHP_EOL, FILE_APPEND);
 
-// DB CONNECT
+// -------------------------------------
+// CONNECT DB
+// -------------------------------------
 try {
     $pdo = db_connect();
 } catch (Throwable $e) {
-    file_put_contents($logFile, "DB ERROR: ".$e->getMessage().PHP_EOL, FILE_APPEND);
+    file_put_contents($logFile, "DB ERROR: " . $e->getMessage() . PHP_EOL, FILE_APPEND);
     http_response_code(500);
     echo json_encode(["ok" => false]);
     exit;
 }
 
+// -------------------------------------
 // SAVE WEBHOOK RAW
+// -------------------------------------
 try {
     $pdo->prepare("
         INSERT INTO webhooks(reference_id, payload)
@@ -62,9 +68,11 @@ try {
     file_put_contents($logFile, "WEBHOOK SAVE ERROR: ".$e->getMessage().PHP_EOL, FILE_APPEND);
 }
 
-// FETCH SESSION — WE NEED EMAIL + AMOUNT
+// -------------------------------------
+// GET SESSION (email, wc_order_id, etc.)
+// -------------------------------------
 $stmt = $pdo->prepare("
-    SELECT email, amount, phone_number
+    SELECT email, amount, phone_number, wc_order_id
     FROM sessions
     WHERE order_id = :oid
     LIMIT 1
@@ -73,10 +81,15 @@ $stmt->execute([":oid" => $orderRef]);
 $session = $stmt->fetch();
 
 $customerEmail = $session["email"] ?? null;
-$amount        = $session["amount"] ?? ($payload["amount"] ?? 0);  // fallback
+$amount        = $session["amount"] ?? ($payload["amount"] ?? 0);
 $customerPhone = $session["phone_number"] ?? null;
+$wc_order_id   = $session["wc_order_id"] ?? null;
 
-// UPDATE PAYMENTS
+file_put_contents($logFile, date('c') . " WC_ORDER_ID: $wc_order_id" . PHP_EOL, FILE_APPEND);
+
+// -------------------------------------
+// UPDATE PAYMENTS TABLE
+// -------------------------------------
 try {
     $pdo->prepare("
         UPDATE payments SET 
@@ -95,7 +108,9 @@ try {
     file_put_contents($logFile, "PAYMENTS UPDATE ERROR: ".$e->getMessage().PHP_EOL, FILE_APPEND);
 }
 
-// UPDATE SESSION STATUS
+// -------------------------------------
+// UPDATE SESSIONS TABLE
+// -------------------------------------
 try {
     $pdo->prepare("
         UPDATE sessions SET 
@@ -110,19 +125,62 @@ try {
     file_put_contents($logFile, "SESSION UPDATE ERROR: ".$e->getMessage().PHP_EOL, FILE_APPEND);
 }
 
-// SEND EMAIL ONLY ON SUCCESSFUL PAYMENT
+
+// ------------------------------------------------------------
+// 🚀  WOO UPDATE (ONLY ON SUCCESS)
+// ------------------------------------------------------------
+if ($status === "successful" && $wc_order_id && $txId) {
+
+    $wcListener = getenv("WC_LISTENER_URL");
+    $secret     = getenv("WC_SECRET_KEY");
+
+    if ($wcListener && $secret) {
+
+        // SIGNATURE
+        $signature = hash_hmac('sha256', $wc_order_id . $txId, $secret);
+
+        // FINAL WC URL
+        $wcUrl = rtrim($wcListener, "/") .
+            "/?order_id={$wc_order_id}" .
+            "&tx={$txId}" .
+            "&sig={$signature}";
+
+        // Hit WooCommerce
+        $resp = @file_get_contents($wcUrl);
+
+        file_put_contents(
+            $logFile,
+            date('c') . " WC_UPDATE_CALL: $wcUrl RESPONSE: " . $resp . PHP_EOL,
+            FILE_APPEND
+        );
+
+    } else {
+        file_put_contents(
+            $logFile,
+            date('c') . " ⚠ MISSING WC_LISTENER_URL or WC_SECRET_KEY" . PHP_EOL,
+            FILE_APPEND
+        );
+    }
+}
+
+
+// ------------------------------------------------------------
+// EMAIL NOTIFICATION
+// ------------------------------------------------------------
 if ($status === "successful" && $customerEmail) {
 
     $success = send_receipt_email($customerEmail, $orderRef, $amount, $customerPhone);
 
     if ($success) {
-        file_put_contents($logFile, date('c')." EMAIL SENT TO $customerEmail".PHP_EOL, FILE_APPEND);
+        file_put_contents($logFile, date('c') . " EMAIL SENT TO $customerEmail" . PHP_EOL, FILE_APPEND);
     } else {
-        file_put_contents($logFile, date('c')." EMAIL FAILED FOR $customerEmail".PHP_EOL, FILE_APPEND);
+        file_put_contents($logFile, date('c') . " EMAIL FAILED FOR $customerEmail" . PHP_EOL, FILE_APPEND);
     }
 }
 
-// ALWAYS RETURN OK (Tranzak expects this)
+
+// ------------------------------------------------------------
+// ALWAYS RETURN OK TO TRANZAK
+// ------------------------------------------------------------
 echo json_encode(["ok" => true, "status" => $status]);
 exit;
-

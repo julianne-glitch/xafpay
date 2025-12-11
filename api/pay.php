@@ -23,16 +23,21 @@ $input = json_decode($raw, true) ?: $_POST;
 
 log_event("pay.php input", $input);
 
-$amount  = floatval($input["amount"] ?? 0);
-$phone   = $input["phone"] ?? "";
-$email   = $input["email"] ?? "";   // ⭐ NEW
-$carrier = strtoupper($input["carrier"] ?? "MTN");
+$amount      = floatval($input["amount"] ?? 0);
+$phone       = $input["phone"] ?? "";
+$email       = $input["email"] ?? "";
+$carrier     = strtoupper($input["carrier"] ?? "MTN");
+$wc_order_id = $input["wc_order_id"] ?? null;     // ⭐ REQUIRED FOR WOOCOMMERCE
 
 // ----------------------------------------------------
 // VALIDATE INPUT
 // ----------------------------------------------------
 if (!$amount || !$phone) {
     json_out(["ok" => false, "error" => "Missing amount or phone"], 400);
+}
+
+if (!$wc_order_id) {
+    json_out(["ok" => false, "error" => "Missing wc_order_id"], 400);
 }
 
 if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
@@ -45,23 +50,20 @@ if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
 $phone = preg_replace("/\D/", "", $phone);
 $phoneE164 = (strlen($phone) === 9) ? "237".$phone : $phone;
 
-log_event("pay.php phoneE164", $phoneE164);
-
 // ----------------------------------------------------
-// ORDER ID
+// INTERNAL XAFPAY ORDER ID
 // ----------------------------------------------------
 $orderId = "ORD" . time() . rand(1000, 9999);
 
 // ----------------------------------------------------
-// DB: CREATE SESSION + PAYMENT
+// DB INSERT → SESSIONS + PAYMENTS
 // ----------------------------------------------------
 try {
     $pdo = db_connect();
 
-    // ⭐ Now includes email
     $stmt = $pdo->prepare("
-        INSERT INTO sessions(amount, currency, phone_number, email, carrier_code, order_id, status)
-        VALUES (:amount, 'XAF', :phone, :email, :carrier, :oid, 'pending')
+        INSERT INTO sessions(amount, currency, phone_number, email, carrier_code, order_id, wc_order_id, status)
+        VALUES (:amount, 'XAF', :phone, :email, :carrier, :oid, :wc, 'pending')
         RETURNING id
     ");
     $stmt->execute([
@@ -69,7 +71,8 @@ try {
         ":phone"   => $phone,
         ":email"   => $email,
         ":carrier" => $carrier,
-        ":oid"     => $orderId
+        ":oid"     => $orderId,
+        ":wc"      => $wc_order_id
     ]);
     $sessionId = $stmt->fetchColumn();
 
@@ -91,13 +94,13 @@ try {
 }
 
 // ----------------------------------------------------
-// CALLBACK + WEBHOOK URLS
+// CALLBACK URLs
 // ----------------------------------------------------
 $callbackUrl = base_url() . "/api/callback.php?email=" . urlencode($email);
 $webhookUrl  = base_url() . "/api/tranzak_webhook.php";
 
 // ----------------------------------------------------
-// TRANZAK XP021 PAYLOAD
+// TRANZAK INITIATE PAYLOAD
 // ----------------------------------------------------
 $payload = [
     "amount"             => $amount,
@@ -105,25 +108,17 @@ $payload = [
     "description"        => "XafPay Payment",
     "mchTransactionRef"  => $orderId,
     "mobileWalletNumber" => $phoneE164,
-    "returnUrl"          => $callbackUrl,     // ⭐ email passed forward
+    "returnUrl"          => $callbackUrl,
     "callbackUrl"        => $webhookUrl
 ];
-
-log_event("pay.php xp021 payload", $payload);
 
 // ----------------------------------------------------
 // CALL TRANZAK INITIATE
 // ----------------------------------------------------
 $resp = tranzak_xp021_initiate($payload);
 
-log_event("pay.php xp021 response", $resp);
-
 if (!$resp || empty($resp["success"])) {
-    json_out([
-        "ok"    => false,
-        "error" => "Tranzak XP021 Error",
-        "raw"   => $resp
-    ], 500);
+    json_out(["ok" => false, "error" => "Tranzak XP021 Error", "raw" => $resp], 500);
 }
 
 $requestId = $resp["data"]["requestId"] ?? null;
@@ -144,13 +139,14 @@ $pdo->prepare("
 ]);
 
 // ----------------------------------------------------
-// FINAL RESPONSE TO FRONTEND
+// FINAL RESPONSE TO CHECKOUT
 // ----------------------------------------------------
 json_out([
     "ok"                 => true,
     "session_id"         => $sessionId,
     "payment_id"         => $paymentId,
     "order_id"           => $orderId,
+    "wc_order_id"        => $wc_order_id,     // ⭐ Sent back to checkout
     "amount"             => $amount,
     "currency"           => "XAF",
     "email"              => $email,
@@ -159,4 +155,3 @@ json_out([
     "tranzak_request_id" => $requestId,
     "tranzak_response"   => $resp
 ]);
-
