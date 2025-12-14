@@ -126,55 +126,88 @@ try {
 }
 
 
-// ------------------------------------------------------------
-// 🚀  WOO UPDATE (ONLY ON SUCCESS)
-// ------------------------------------------------------------
+// =====================================================================
+// 🚀 ONE-TIME WOO UPDATE (Prevents duplicate Woo order completion)
+// =====================================================================
 if ($status === "successful" && $wc_order_id && $txId) {
 
-    $wcListener = getenv("WC_LISTENER_URL");
-    $secret     = getenv("WC_SECRET_KEY");
+    // Check if already notified Woo
+    $stmt = $pdo->prepare("SELECT wc_notified FROM payments WHERE reference_id = :ref LIMIT 1");
+    $stmt->execute([":ref" => $orderRef]);
+    $row = $stmt->fetch();
 
-    if ($wcListener && $secret) {
+    if (!$row || !$row["wc_notified"]) {
 
-        // SIGNATURE
-        $signature = hash_hmac('sha256', $wc_order_id . $txId, $secret);
+        $wcListener = getenv("WC_LISTENER_URL");
+        $secret     = getenv("WC_SECRET_KEY");
 
-        // FINAL WC URL
-        $wcUrl = rtrim($wcListener, "/") .
-            "/?order_id={$wc_order_id}" .
-            "&tx={$txId}" .
-            "&sig={$signature}";
+        if ($wcListener && $secret) {
 
-        // Hit WooCommerce
-        $resp = @file_get_contents($wcUrl);
+            $signature = hash_hmac('sha256', $wc_order_id . $txId, $secret);
 
-        file_put_contents(
-            $logFile,
-            date('c') . " WC_UPDATE_CALL: $wcUrl RESPONSE: " . $resp . PHP_EOL,
-            FILE_APPEND
-        );
+            $wcUrl = rtrim($wcListener, "/") .
+                "/?order_id={$wc_order_id}" .
+                "&tx={$txId}" .
+                "&sig={$signature}";
 
+            $resp = @file_get_contents($wcUrl);
+
+            // mark Woo notified
+            $pdo->prepare("
+                UPDATE payments SET wc_notified = TRUE WHERE reference_id = :ref
+            ")->execute([":ref" => $orderRef]);
+
+            file_put_contents(
+                $logFile,
+                date('c') . " WOO_NOTIFY_ONCE: $wcUrl RESPONSE: $resp" . PHP_EOL,
+                FILE_APPEND
+            );
+
+        } else {
+            file_put_contents(
+                $logFile,
+                date('c') . " ⚠ MISSING WC_LISTENER_URL or WC_SECRET_KEY" . PHP_EOL,
+                FILE_APPEND
+            );
+        }
     } else {
         file_put_contents(
             $logFile,
-            date('c') . " ⚠ MISSING WC_LISTENER_URL or WC_SECRET_KEY" . PHP_EOL,
+            date('c') . " WOO ALREADY NOTIFIED — SKIPPED" . PHP_EOL,
             FILE_APPEND
         );
     }
 }
 
 
-// ------------------------------------------------------------
-// EMAIL NOTIFICATION
-// ------------------------------------------------------------
+
+// =====================================================================
+// 🚀 ONE-TIME EMAIL RECEIPT (Prevents duplicate emails)
+// =====================================================================
 if ($status === "successful" && $customerEmail) {
 
-    $success = send_receipt_email($customerEmail, $orderRef, $amount, $customerPhone);
+    // Check if email already sent
+    $stmt = $pdo->prepare("SELECT email_sent FROM payments WHERE reference_id = :ref LIMIT 1");
+    $stmt->execute([":ref" => $orderRef]);
+    $row = $stmt->fetch();
 
-    if ($success) {
-        file_put_contents($logFile, date('c') . " EMAIL SENT TO $customerEmail" . PHP_EOL, FILE_APPEND);
+    if (!$row || !$row["email_sent"]) {
+
+        $success = send_receipt_email($customerEmail, $orderRef, $amount, $customerPhone);
+
+        if ($success) {
+            // Mark as sent
+            $pdo->prepare("
+                UPDATE payments SET email_sent = TRUE WHERE reference_id = :ref
+            ")->execute([":ref" => $orderRef]);
+
+            file_put_contents($logFile, date('c') . " EMAIL SENT ONCE to $customerEmail" . PHP_EOL, FILE_APPEND);
+        } else {
+            file_put_contents($logFile, date('c') . " EMAIL FAILED for $customerEmail" . PHP_EOL, FILE_APPEND);
+        }
+
     } else {
-        file_put_contents($logFile, date('c') . " EMAIL FAILED FOR $customerEmail" . PHP_EOL, FILE_APPEND);
+        file_put_contents($logFile, date('c') . " EMAIL ALREADY SENT — SKIPPED" . PHP_EOL, FILE_APPEND);
     }
 }
 
@@ -184,3 +217,4 @@ if ($status === "successful" && $customerEmail) {
 // ------------------------------------------------------------
 echo json_encode(["ok" => true, "status" => $status]);
 exit;
+
