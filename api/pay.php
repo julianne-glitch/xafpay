@@ -96,7 +96,7 @@ try {
 // ----------------------------------------------------
 // CALLBACK URLs
 // ----------------------------------------------------
-$callbackUrl = base_url() . "/api/callback.php?email=" . urlencode($email);
+$callbackUrl = base_url() . "/api/callback.php?order_id=$orderId&email=" . urlencode($email);
 $webhookUrl  = base_url() . "/api/tranzak_webhook.php";
 
 // ----------------------------------------------------
