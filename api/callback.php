@@ -32,7 +32,7 @@ if (!$orderId) {
 }
 
 // ------------------------------------------------------------
-// LOOKUP SESSION (to get wc_order_id + session status)
+// LOOKUP SESSION
 // ------------------------------------------------------------
 try {
     $pdo = db_connect();
@@ -59,21 +59,18 @@ if (!$row) {
     exit;
 }
 
-$wcOrderId     = $row['wc_order_id'];
+$wcOrderId     = $row['wc_order_id'];  // may be null
 $sessionStatus = strtolower($row['status']);
+$woo           = rtrim(wc_base_url(), "/");
 
 // ------------------------------------------------------------
-// WOO BASE URL
-// ------------------------------------------------------------
-$woo = rtrim(wc_base_url(), "/");
-
-// ------------------------------------------------------------
-// HANDLE FAILED / CANCELLED
+// FAILURE CASES
 // ------------------------------------------------------------
 if (in_array($sessionStatus, ["failed", "canceled", "cancelled", "expired"])) {
 
     log_event("callback.php failed_status", $sessionStatus);
 
+    // safe fallback even if wc_order_id is null
     $retryUrl = "{$woo}/?pay_for_order=1&order_id={$wcOrderId}";
 
     echo "
@@ -124,17 +121,33 @@ if (in_array($sessionStatus, ["failed", "canceled", "cancelled", "expired"])) {
 }
 
 // ------------------------------------------------------------
-// SUCCESS CASE → REDIRECT BACK TO WOO
-//
-// WooCommerce listens to its OWN webhook.
-// If status is still pending here, it's fine — once webhook fires,
-// WC will update to Processing automatically.
+// SUCCESS CASE
 // ------------------------------------------------------------
-$returnUrl = $woo . "/checkout/order-received/{$wcOrderId}/?key=" . wc_get_order_key($wcOrderId);
 
-// log it:
+// If WooCommerce order ID is missing → fallback thanks screen
+if (!$wcOrderId) {
+    log_event("callback.php missing_wc_order_id", $orderId);
+
+    echo "
+    <html>
+    <head><title>Payment Received</title></head>
+    <body style='font-family:Arial; text-align:center; padding-top:80px;'>
+        <h2>Payment Successful</h2>
+        <p>We received your payment.<br>Return to shop.</p>
+        <a href='{$woo}' style='padding:10px 20px; background:#007bff; color:white; text-decoration:none; border-radius:6px;'>Back to Shop</a>
+    </body>
+    </html>
+    ";
+    exit;
+}
+
+// ------------------------------------------------------------
+// NORMAL SUCCESS REDIRECT
+// ------------------------------------------------------------
+$returnUrl = "{$woo}/?order_id={$wcOrderId}&email=" . urlencode($email);
+
 log_event("callback.php redirect_success", $returnUrl);
-
-// redirect:
 header("Location: {$returnUrl}");
 exit;
+
+?>
