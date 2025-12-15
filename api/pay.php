@@ -21,7 +21,7 @@ header("Content-Type: application/json");
 // ----------------------------------------------------
 // READ INPUT
 // ----------------------------------------------------
-$raw   = file_get_contents("php://input");
+$raw = file_get_contents("php://input");
 $input = json_decode($raw, true);
 
 if (!is_array($input)) {
@@ -30,13 +30,13 @@ if (!is_array($input)) {
 
 log_event("pay.php input", $input);
 
-$amount        = floatval($input["amount"] ?? 0);
-$currency      = strtoupper($input["currency"] ?? "XAF");
-$phone         = trim($input["phone"] ?? "");
-$email         = trim($input["email"] ?? "");
-$carrier       = strtoupper($input["carrier"] ?? "MTN");
-$wc_order_id   = $input["wc_order_id"] ?? null;
-$return_url    = $input["return_url"] ?? null;
+$amount      = floatval($input["amount"] ?? 0);
+$currency    = strtoupper($input["currency"] ?? "XAF");
+$phone       = trim($input["phone"] ?? "");
+$email       = trim($input["email"] ?? "");
+$carrier     = strtoupper($input["carrier"] ?? "MTN");
+$wc_order_id = $input["wc_order_id"] ?? null;
+$return_url  = $input["return_url"] ?? null;
 
 // ----------------------------------------------------
 // VALIDATION
@@ -73,12 +73,12 @@ $phoneE164 = (strlen($digits) === 9) ? "237{$digits}" : $digits;
 $orderId = "ORD" . time() . random_int(1000, 9999);
 
 // ----------------------------------------------------
-// DB INSERT
+// DB INSERT (MATCHES YOUR ACTUAL SCHEMA)
 // ----------------------------------------------------
 try {
     $pdo = db_connect();
 
-    // -------------------- sessions --------------------
+    // sessions (NO wc_return_url)
     $stmt = $pdo->prepare("
         INSERT INTO sessions (
             order_id,
@@ -88,7 +88,6 @@ try {
             phone_number,
             email,
             carrier_code,
-            wc_return_url,
             status
         ) VALUES (
             :order_id,
@@ -98,7 +97,6 @@ try {
             :phone,
             :email,
             :carrier,
-            :return_url,
             'pending'
         )
         RETURNING id
@@ -112,12 +110,11 @@ try {
         ":phone"       => $digits,
         ":email"       => $email,
         ":carrier"     => $carrier,
-        ":return_url"  => $return_url,
     ]);
 
     $sessionId = $stmt->fetchColumn();
 
-    // -------------------- payments --------------------
+    // payments
     $stmt2 = $pdo->prepare("
         INSERT INTO payments (
             session_id,
@@ -136,27 +133,17 @@ try {
     ");
 
     $stmt2->execute([
-        ":session_id"  => $sessionId,
-        ":amount"      => $amount,
-        ":carrier"     => $carrier,
-        ":reference_id"=> $orderId,
+        ":session_id"   => $sessionId,
+        ":amount"       => $amount,
+        ":carrier"      => $carrier,
+        ":reference_id" => $orderId,
     ]);
 
     $paymentId = $stmt2->fetchColumn();
 
 } catch (Throwable $e) {
-
-    // 🔥 THIS IS THE MOST IMPORTANT PART
-    log_event("pay.php DB ERROR", [
-        "message" => $e->getMessage(),
-        "code"    => $e->getCode(),
-    ]);
-
-    json_out([
-        "ok"    => false,
-        "error" => $e->getMessage(),
-        "code"  => $e->getCode()
-    ], 500);
+    log_event("pay.php DB ERROR", $e->getMessage());
+    json_out(["ok" => false, "error" => $e->getMessage()], 500);
 }
 
 // ----------------------------------------------------
@@ -209,14 +196,9 @@ $pdo->prepare("
 // RESPONSE
 // ----------------------------------------------------
 json_out([
-    "ok"                 => true,
-    "order_id"           => $orderId,
-    "wc_order_id"        => $wc_order_id,
-    "session_id"         => $sessionId,
-    "payment_id"         => $paymentId,
-    "amount"             => $amount,
-    "currency"           => $currency,
-    "phone"              => $digits,
-    "phone_e164"         => $phoneE164,
-    "tranzak_request_id" => $requestId,
+    "ok"          => true,
+    "order_id"    => $orderId,
+    "wc_order_id" => $wc_order_id,
+    "session_id"  => $sessionId,
+    "payment_id"  => $paymentId,
 ]);
