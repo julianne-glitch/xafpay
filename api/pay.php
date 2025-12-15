@@ -4,9 +4,9 @@ require_once __DIR__ . '/../config.php';
 require_once __DIR__ . '/logger.php';
 require_once __DIR__ . '/tranzak_helpers.php';
 
-// ----------------------------------------------------
-// CORS
-// ----------------------------------------------------
+/* ----------------------------------------------------
+ * CORS
+ * ---------------------------------------------------- */
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Headers: Content-Type, Authorization");
 header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
@@ -18,9 +18,9 @@ if ($_SERVER["REQUEST_METHOD"] === "OPTIONS") {
 
 header("Content-Type: application/json");
 
-// ----------------------------------------------------
-// READ INPUT
-// ----------------------------------------------------
+/* ----------------------------------------------------
+ * READ INPUT
+ * ---------------------------------------------------- */
 $raw = file_get_contents("php://input");
 $input = json_decode($raw, true);
 
@@ -38,9 +38,9 @@ $carrier     = strtoupper($input["carrier"] ?? "MTN");
 $wc_order_id = $input["wc_order_id"] ?? null;
 $return_url  = $input["return_url"] ?? null;
 
-// ----------------------------------------------------
-// VALIDATION
-// ----------------------------------------------------
+/* ----------------------------------------------------
+ * VALIDATION
+ * ---------------------------------------------------- */
 if ($amount <= 0) {
     json_out(["ok" => false, "error" => "Invalid amount"], 400);
 }
@@ -61,20 +61,20 @@ if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
     json_out(["ok" => false, "error" => "Invalid email"], 400);
 }
 
-// ----------------------------------------------------
-// PHONE → E164
-// ----------------------------------------------------
+/* ----------------------------------------------------
+ * PHONE → E164
+ * ---------------------------------------------------- */
 $digits = preg_replace("/\D/", "", $phone);
 $phoneE164 = (strlen($digits) === 9) ? "237{$digits}" : $digits;
 
-// ----------------------------------------------------
-// INTERNAL XAFPAY ORDER ID
-// ----------------------------------------------------
+/* ----------------------------------------------------
+ * INTERNAL XAFPAY ORDER ID
+ * ---------------------------------------------------- */
 $orderId = "ORD" . time() . random_int(1000, 9999);
 
-// ----------------------------------------------------
-// DB INSERT (MATCHES YOUR ACTUAL SCHEMA)
-// ----------------------------------------------------
+/* ----------------------------------------------------
+ * DB INSERT (MATCHES EXISTING SCHEMA)
+ * ---------------------------------------------------- */
 try {
     $pdo = db_connect();
 
@@ -143,18 +143,18 @@ try {
 
 } catch (Throwable $e) {
     log_event("pay.php DB ERROR", $e->getMessage());
-    json_out(["ok" => false, "error" => $e->getMessage()], 500);
+    json_out(["ok" => false, "error" => "Database error"], 500);
 }
 
-// ----------------------------------------------------
-// TRANZAK CALLBACKS
-// ----------------------------------------------------
+/* ----------------------------------------------------
+ * TRANZAK CALLBACKS
+ * ---------------------------------------------------- */
 $callbackUrl = base_url() . "/api/callback.php?order_id={$orderId}";
 $webhookUrl  = base_url() . "/api/tranzak_webhook.php";
 
-// ----------------------------------------------------
-// TRANZAK PAYLOAD
-// ----------------------------------------------------
+/* ----------------------------------------------------
+ * TRANZAK PAYLOAD
+ * ---------------------------------------------------- */
 $payload = [
     "amount"             => $amount,
     "currencyCode"       => $currency,
@@ -165,9 +165,9 @@ $payload = [
     "callbackUrl"        => $webhookUrl,
 ];
 
-// ----------------------------------------------------
-// CALL TRANZAK
-// ----------------------------------------------------
+/* ----------------------------------------------------
+ * CALL TRANZAK
+ * ---------------------------------------------------- */
 $resp = tranzak_xp021_initiate($payload);
 
 if (!$resp || empty($resp["success"])) {
@@ -177,9 +177,9 @@ if (!$resp || empty($resp["success"])) {
 
 $requestId = $resp["data"]["requestId"] ?? null;
 
-// ----------------------------------------------------
-// SAVE TRANZAK REQUEST ID
-// ----------------------------------------------------
+/* ----------------------------------------------------
+ * SAVE TRANZAK REQUEST ID
+ * ---------------------------------------------------- */
 $pdo->prepare("
     UPDATE payments
     SET transaction_request_id = :tid,
@@ -192,9 +192,9 @@ $pdo->prepare("
     ":pid"     => $paymentId,
 ]);
 
-// ----------------------------------------------------
-// RESPONSE
-// ----------------------------------------------------
+/* ----------------------------------------------------
+ * RESPONSE
+ * ---------------------------------------------------- */
 json_out([
     "ok"          => true,
     "order_id"    => $orderId,
