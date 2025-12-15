@@ -23,12 +23,12 @@ $input = json_decode($raw, true) ?: $_POST;
 
 log_event("pay.php input", $input);
 
-$amount      = floatval($input["amount"] ?? 0);
-$phone       = trim($input["phone"] ?? "");
-$email       = trim($input["email"] ?? "");
-$carrier     = strtoupper($input["carrier"] ?? "MTN");
-$wc_order_id = $input["wc_order_id"] ?? null;
-$return_url  = $input["return_url"] ?? null;   // ⭐ CRITICAL FIX
+$amount        = floatval($input["amount"] ?? 0);
+$phone         = trim($input["phone"] ?? "");
+$email         = trim($input["email"] ?? "");
+$carrier       = strtoupper($input["carrier"] ?? "MTN");
+$wc_order_id   = $input["wc_order_id"] ?? null;
+$wc_return_url = $input["return_url"] ?? null; // ✅ REQUIRED
 
 // ----------------------------------------------------
 // VALIDATION
@@ -41,7 +41,7 @@ if (!$wc_order_id) {
     json_out(["ok" => false, "error" => "Missing wc_order_id"], 400);
 }
 
-if (!$return_url) {
+if (!$wc_return_url) {
     json_out(["ok" => false, "error" => "Missing return_url"], 400);
 }
 
@@ -52,10 +52,8 @@ if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
 // ----------------------------------------------------
 // PHONE → E164
 // ----------------------------------------------------
-$phoneDigits = preg_replace("/\D/", "", $phone);
-$phoneE164   = (strlen($phoneDigits) === 9)
-    ? "237" . $phoneDigits
-    : $phoneDigits;
+$digits = preg_replace("/\D/", "", $phone);
+$phoneE164 = (strlen($digits) === 9) ? "237{$digits}" : $digits;
 
 // ----------------------------------------------------
 // INTERNAL XAFPAY ORDER ID
@@ -63,7 +61,7 @@ $phoneE164   = (strlen($phoneDigits) === 9)
 $orderId = "ORD" . time() . rand(1000, 9999);
 
 // ----------------------------------------------------
-// DB INSERT → sessions + payments
+// DB INSERT
 // ----------------------------------------------------
 try {
     $pdo = db_connect();
@@ -78,10 +76,9 @@ try {
             carrier_code,
             order_id,
             wc_order_id,
-            return_url,
+            wc_return_url,
             status
-        )
-        VALUES (
+        ) VALUES (
             :amount,
             'XAF',
             :phone,
@@ -96,12 +93,12 @@ try {
     ");
     $stmt->execute([
         ":amount"     => $amount,
-        ":phone"      => $phoneDigits,
+        ":phone"      => $digits,
         ":email"      => $email,
         ":carrier"    => $carrier,
         ":oid"        => $orderId,
         ":wc"         => $wc_order_id,
-        ":return_url" => $return_url,
+        ":return_url" => $wc_return_url,
     ]);
 
     $sessionId = $stmt->fetchColumn();
@@ -114,8 +111,7 @@ try {
             carrier,
             status,
             reference_id
-        )
-        VALUES (
+        ) VALUES (
             :sid,
             :amount,
             :carrier,
@@ -139,16 +135,13 @@ try {
 }
 
 // ----------------------------------------------------
-// TRANZAK CALLBACK URLS
+// TRANZAK CALLBACKS
 // ----------------------------------------------------
-$callbackUrl = base_url() . "/api/callback.php"
-    . "?order_id=" . urlencode($orderId)
-    . "&email=" . urlencode($email);
-
-$webhookUrl = base_url() . "/api/tranzak_webhook.php";
+$callbackUrl = base_url() . "/api/callback.php?order_id={$orderId}";
+$webhookUrl  = base_url() . "/api/tranzak_webhook.php";
 
 // ----------------------------------------------------
-// TRANZAK INIT PAYLOAD
+// TRANZAK PAYLOAD
 // ----------------------------------------------------
 $payload = [
     "amount"             => $amount,
@@ -199,7 +192,7 @@ json_out([
     "amount"             => $amount,
     "currency"           => "XAF",
     "email"              => $email,
-    "phone"              => $phoneDigits,
+    "phone"              => $digits,
     "phone_e164"         => $phoneE164,
     "tranzak_request_id" => $requestId,
 ]);

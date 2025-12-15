@@ -12,43 +12,59 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     exit;
 }
 
+// ------------------------------------------------------------
+// READ QUERY
+// ------------------------------------------------------------
 $orderId = $_GET['order_id'] ?? null;
-$email   = $_GET['email'] ?? null;
 
-log_event("callback.php reached", $_GET);
+log_event("callback.php hit", $_GET);
 
+$woo = rtrim(wc_base_url(), "/");
+
+// ------------------------------------------------------------
+// SAFETY: missing order_id → go home
+// ------------------------------------------------------------
 if (!$orderId) {
-    echo "Missing order_id";
+    header("Location: {$woo}");
     exit;
 }
 
-$pdo = db_connect();
+// ------------------------------------------------------------
+// LOOKUP STORED WOO RETURN URL
+// ------------------------------------------------------------
+try {
+    $pdo = db_connect();
 
-$stmt = $pdo->prepare("
-    SELECT wc_order_id
-    FROM sessions
-    WHERE order_id = :oid
-    LIMIT 1
-");
-$stmt->execute(['oid' => $orderId]);
-$row = $stmt->fetch(PDO::FETCH_ASSOC);
+    $stmt = $pdo->prepare("
+        SELECT wc_return_url
+        FROM sessions
+        WHERE order_id = :oid
+        LIMIT 1
+    ");
+    $stmt->execute(['oid' => $orderId]);
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
 
-if (!$row || !$row['wc_order_id']) {
-    log_event("callback.php order_not_found", $orderId);
-    echo "Order not found";
+} catch (Throwable $e) {
+    log_event("callback.php db_error", $e->getMessage());
+    header("Location: {$woo}");
     exit;
 }
 
-$wcOrderId = intval($row['wc_order_id']);
-$woo       = rtrim(wc_base_url(), "/");
+// ------------------------------------------------------------
+// ✅ CORRECT REDIRECT (WITH ORDER KEY)
+// ------------------------------------------------------------
+if ($row && !empty($row['wc_return_url'])) {
 
-/**
- * ✅ ALWAYS REDIRECT
- * ❌ NEVER CHECK STATUS HERE
- */
-$returnUrl = "{$woo}/checkout/order-received/{$wcOrderId}/";
+    log_event("callback.php redirect_success", $row['wc_return_url']);
 
-log_event("callback.php redirecting", $returnUrl);
+    header("Location: " . $row['wc_return_url']);
+    exit;
+}
 
-header("Location: $returnUrl", true, 302);
+// ------------------------------------------------------------
+// FALLBACK — SHOULD NEVER HAPPEN
+// ------------------------------------------------------------
+log_event("callback.php missing_wc_return_url", $orderId);
+
+header("Location: {$woo}");
 exit;
